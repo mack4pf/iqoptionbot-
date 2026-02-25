@@ -1,0 +1,5 @@
+node_modules/
+.env
+temp_charts/
+users.json
+*.log
