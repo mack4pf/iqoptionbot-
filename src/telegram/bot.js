@@ -659,6 +659,57 @@ class TelegramBot {
             }
         });
 
+        // Admin: Revoke access
+        this.bot.command('revoke', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return;
+            const args = ctx.message.text.split(' ');
+            if (args.length < 2) return ctx.reply('❌ *Usage:* `/revoke [user_id]`', { parse_mode: 'Markdown' });
+
+            const targetId = args[1];
+            try {
+                await this.db.revokeUserAccess(targetId);
+                await ctx.reply(`✅ *Access revoked for user:* \`${targetId}\``, { parse_mode: 'Markdown' });
+            } catch (error) {
+                ctx.reply('❌ Failed to revoke access: ' + error.message);
+            }
+        });
+
+        // Admin: Add Signal Channel
+        this.bot.command('addchannel', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return;
+            const args = ctx.message.text.split(' ');
+            if (args.length < 2) {
+                return ctx.reply('❌ *Usage:* `/addchannel [channel_id] [name]`\nExample: `/addchannel -100123456789 VIP Signals`', { parse_mode: 'Markdown' });
+            }
+
+            const channelId = args[1];
+            const channelName = args.slice(2).join(' ') || 'Signal Channel';
+
+            try {
+                await this.db.addSignalChannel(ctx.from.id, channelId, channelName);
+                await ctx.reply(`✅ *Channel added:* ${channelName} (\`${channelId}\`)`, { parse_mode: 'Markdown' });
+            } catch (error) {
+                ctx.reply('❌ Failed to add channel: ' + error.message);
+            }
+        });
+
+        // Admin: Remove Signal Channel
+        this.bot.command('removechannel', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return;
+            const args = ctx.message.text.split(' ');
+            if (args.length < 2) {
+                return ctx.reply('❌ *Usage:* `/removechannel [channel_id]`', { parse_mode: 'Markdown' });
+            }
+
+            const channelId = args[1];
+            try {
+                await this.db.removeSignalChannel(channelId);
+                await ctx.reply(`✅ *Channel removed:* \`${channelId}\``, { parse_mode: 'Markdown' });
+            } catch (error) {
+                ctx.reply('❌ Failed to remove channel: ' + error.message);
+            }
+        });
+
         // Debug command
         this.bot.command('myid', async (ctx) => {
             await ctx.reply(`Your Telegram ID: \`${ctx.from.id}\``, { parse_mode: 'Markdown' });
@@ -821,6 +872,21 @@ ${resultEmoji} ${resultText}
             }
         });
 
+        this.bot.hears('🔴 Revoke User', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return;
+            await ctx.reply('🛠 *Revoke User Access*\n\nPlease use the command below with the User ID:\n`/revoke [user_id]`\n\n_Tip: Find IDs in the "List Users" menu._', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.hears('📢 Add Channel', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return;
+            await ctx.reply('🛠 *Add Signal Channel*\n\nUse this command to add a channel where signals will be posted:\n`/addchannel [channel_id] [name]`\n\nExample: `/addchannel -100123456789 PRO Signals`', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.hears('📢 Remove Channel', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return;
+            await ctx.reply('🛠 *Remove Signal Channel*\n\nUse this command with the Channel ID:\n`/removechannel [channel_id]`', { parse_mode: 'Markdown' });
+        });
+
         // User menu handlers
         this.bot.hears('💰 Balance', async (ctx) => {
             const client = this.userConnections.get(ctx.from.id);
@@ -952,6 +1018,28 @@ ${resultEmoji} ${resultText}
             });
         });
 
+        this.bot.hears('🔔 Notifications', async (ctx) => {
+            await ctx.reply('🔔 *Notification Settings*\n\nThis feature is coming soon! You will be able to toggle trade notifications and sound alerts.', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.hears('🌙 Dark Mode', async (ctx) => {
+            await ctx.reply('🌙 *Dark Mode*\n\nYour UI is currently determined by your Telegram theme. Custom bot themes are coming soon!', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.hears('💬 Language', async (ctx) => {
+            await ctx.reply('💬 *Language Settings*\n\nCurrently only English is supported. More languages (Portuguese, Spanish, Hindi) are being added!', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.hears('🔄 Reset Settings', async (ctx) => {
+            await ctx.reply('🔄 *Reset All Settings*\n\nAre you sure you want to reset all your bot preferences?', {
+                parse_mode: 'Markdown',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('✅ Yes, Reset', 'reset_prefs_confirm')],
+                    [Markup.button.callback('❌ No, Cancel', 'reset_prefs_cancel')]
+                ])
+            });
+        });
+
         this.bot.hears('◀️ Back', async (ctx) => {
             if (ctx.state.user?.is_admin) {
                 await ctx.reply('Admin Menu', this.adminMainMenu);
@@ -1073,6 +1161,22 @@ ${resultEmoji} ${resultText}
         this.bot.action('cancel_test_trade', async (ctx) => {
             await ctx.answerCbQuery();
             await ctx.reply('❌ Test trade cancelled');
+        });
+
+        this.bot.action('reset_prefs_confirm', async (ctx) => {
+            await ctx.answerCbQuery();
+            // Reset basic prefs
+            await this.db.updateUser(ctx.from.id, {
+                martingale_enabled: true,
+                tradeAmount: 1500,
+                account_type: 'PRACTICE'
+            });
+            await ctx.editMessageText('✅ *Settings Reset!*\n\nYour account has been reset to PRACTICE mode with default martingale settings.', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.action('reset_prefs_cancel', async (ctx) => {
+            await ctx.answerCbQuery();
+            await ctx.editMessageText('❌ Reset cancelled.');
         });
     }
 

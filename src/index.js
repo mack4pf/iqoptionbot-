@@ -94,16 +94,19 @@ class TradingBot {
 
         // Set up admin callbacks
         if (this.telegramBot) {
+            // Add to user connections so admin can use /balance, /status, etc.
+            this.telegramBot.userConnections.set(process.env.ADMIN_CHAT_ID, this.adminClient);
+
             this.adminClient.onTradeOpened = (tradeData) => {
-                this.telegramBot.sendToAdmin('tradeOpened', tradeData);
+                this.telegramBot.handleUserTradeOpened(process.env.ADMIN_CHAT_ID, tradeData);
             };
             this.adminClient.onTradeClosed = (tradeResult) => {
-                this.telegramBot.sendToAdmin('tradeClosed', tradeResult);
+                this.telegramBot.handleUserTradeClosed(process.env.ADMIN_CHAT_ID, tradeResult);
             };
         }
 
         this.adminClient.connect();
-        console.log('✅ Admin IQ Option connected and monitoring\n');
+        console.log('✅ Admin IQ Option connected and registered in bot\n');
     }
 
     async executeSignalForAllUsers(signal) {
