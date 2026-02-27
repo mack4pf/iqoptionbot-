@@ -21,8 +21,8 @@ app.post('/api/signals/create', async (req, res) => {
         return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Map signal: 'buy' -> 'call', 'sell' -> 'put'
-    const direction = signal === 'buy' ? 'call' : 'put';
+    // Map signal: 'buy' -> 'call', 'sell' -> 'put', handling case-sensitivity
+    const direction = signal.toLowerCase() === 'buy' ? 'call' : 'put';
     // TradingView sends `time` in seconds (e.g. 300 = 5 min).
     // Convert to minutes and fallback to 5 min if zero/missing.
     const rawDuration = Math.floor(time / 60);
