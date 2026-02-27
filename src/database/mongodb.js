@@ -118,6 +118,8 @@ class MongoDB {
                     account_type: 'PRACTICE',
                     tradeAmount: 1500, // Default trade amount for admin
                     balance: 0,
+                    copyAdminEnabled: false,
+                    autoTraderEnabled: true,
                     connected: false,
                     created_at: new Date(),
                     last_active: new Date(),
@@ -237,6 +239,8 @@ class MongoDB {
             password_encrypted: encrypted,
             account_type: 'PRACTICE',
             tradeAmount: 1500, // ✅ DEFAULT TRADE AMOUNT (1500 NGN)
+            copyAdminEnabled: false,
+            autoTraderEnabled: true,
             balance: 0,
             connected: false,
             created_at: new Date(),

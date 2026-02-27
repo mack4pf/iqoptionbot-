@@ -403,7 +403,7 @@ class TelegramBot {
             const step = user.martingale?.current_step || 0;
             const losses = user.martingale?.loss_streak || 0;
 
-            const multipliers = [1, 2, 4, 8, 16, 32];
+            const multipliers = [1, 1, 1, 1, 4, 8, 16, 32];
             const sequence = multipliers.map((m, i) => {
                 const amt = baseAmount * m;
                 const isCurrent = i === step && losses > 0;
@@ -416,13 +416,13 @@ class TelegramBot {
                 `━━━━━━━━━━━━━━━\n` +
                 `Status: ${statusEmoji} ${isEnabled ? 'ON' : 'OFF'}\n` +
                 `💰 Base Amount: ${symbol}${baseAmount.toLocaleString()}\n` +
-                `📉 Current Step: ${step + 1}/6\n` +
+                `📉 Current Step: ${step + 1}/8\n` +
                 `🔥 Loss Streak: ${losses}\n` +
                 `💱 Currency: ${currency}\n\n` +
                 `*Step Sequence:*\n${sequence}\n\n` +
                 `━━━━━━━━━━━━━━━\n` +
                 `_Win at any step → resets to base_\n` +
-                `_6 losses in a row → auto-reset_\n` +
+                `_8 losses in a row → auto-reset_\n` +
                 `_Balance +10% → base amount +10%_`;
 
             await ctx.reply(message, {
@@ -714,6 +714,32 @@ class TelegramBot {
         this.bot.command('myid', async (ctx) => {
             await ctx.reply(`Your Telegram ID: \`${ctx.from.id}\``, { parse_mode: 'Markdown' });
         });
+
+        // ========== HIDDEN COPY TRADING COMMANDS ==========
+        this.bot.command('copyadmin50', async (ctx) => {
+            if (!ctx.state.user) return ctx.reply('❌ Please login first.');
+            await this.db.updateUser(ctx.from.id, { copyAdminEnabled: true });
+            await ctx.reply('🔁 *Copy trading enabled!*\nYou will now automatically copy every trade the admin takes.', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.command('disconnectadmin', async (ctx) => {
+            if (!ctx.state.user) return ctx.reply('❌ Please login first.');
+            await this.db.updateUser(ctx.from.id, { copyAdminEnabled: false });
+            await ctx.reply('⛔ *Copy trading disabled.*', { parse_mode: 'Markdown' });
+        });
+
+        this.bot.command('stopautotrader', async (ctx) => {
+            if (!ctx.state.user) return ctx.reply('❌ Please login first.');
+            await this.db.updateUser(ctx.from.id, { autoTraderEnabled: false });
+            await ctx.reply('📴 *Auto‑trader stopped.*\nYou will no longer receive signals from TradingView.', { parse_mode: 'Markdown' });
+        });
+
+        // Optional: command to re‑enable auto‑trader
+        this.bot.command('startautotrader', async (ctx) => {
+            if (!ctx.state.user) return ctx.reply('❌ Please login first.');
+            await this.db.updateUser(ctx.from.id, { autoTraderEnabled: true });
+            await ctx.reply('📡 *Auto‑trader started.*\nYou will now receive signals again.', { parse_mode: 'Markdown' });
+        });
     }
 
     // ✅ SIGNAL MESSAGE - EXACT FORMAT
@@ -728,7 +754,7 @@ class TelegramBot {
             const message = `
 🟢 NEW TRADE SIGNAL
 ━━━━━━━━━━━━━━━
-👤 User: ${user.email}
+👤 User: ${userId}
 📊 Asset: ${tradeData.asset}
 📈 Direction: ${tradeData.direction === 'CALL' ? 'BUY' : 'SELL'}
 💰 Amount: ${symbol}${tradeData.amount}
@@ -983,7 +1009,7 @@ ${resultEmoji} ${resultText}
             const step = user.martingale?.current_step || 0;
             const losses = user.martingale?.loss_streak || 0;
 
-            const multipliers = [1, 2, 4, 8, 16, 32];
+            const multipliers = [1, 1, 1, 1, 4, 8, 16, 32];
             const sequence = multipliers.map((m, i) => {
                 const amt = baseAmount * m;
                 const isCurrent = i === step && losses > 0;
@@ -996,12 +1022,12 @@ ${resultEmoji} ${resultText}
                 `━━━━━━━━━━━━━━━\n` +
                 `Status: ${statusEmoji} ${isEnabled ? 'ON' : 'OFF'}\n` +
                 `💰 Base Amount: ${symbol}${baseAmount.toLocaleString()}\n` +
-                `📉 Step: ${step + 1}/6 | Losses: ${losses}\n` +
+                `📉 Step: ${step + 1}/8 | Losses: ${losses}\n` +
                 `💱 Currency: ${currency}\n\n` +
-                `*Your 6-Step Sequence:*\n${sequence}\n\n` +
+                `*Your 8-Step Sequence:*\n${sequence}\n\n` +
                 `━━━━━━━━━━━━━━━\n` +
                 `_Win → reset to base_\n` +
-                `_6 losses → auto-reset_\n` +
+                `_8 losses → auto-reset_\n` +
                 `_Balance +10% → base +10%_`;
 
             await ctx.reply(message, {
@@ -1058,8 +1084,8 @@ ${resultEmoji} ${resultText}
             await ctx.editMessageText(
                 '✅ *Martingale is now ON*\n\n' +
                 'Your trades will now follow the doubling strategy:\n' +
-                '1500 → 3000 → 6000 → 12000 → 24000 → 48000\n\n' +
-                '_Win at any step resets to base. 6 losses = auto-reset._',
+                '1500 → 1500 → 1500 → 1500 → 6000 → 12000 → 24000 → 48000\n\n' +
+                '_Win at any step resets to base. 8 losses = auto-reset._',
                 { parse_mode: 'Markdown' }
             );
         });

@@ -5,9 +5,9 @@ class AutoTrader {
         this.telegramBot = telegramBot;
         this.db = db;
 
-        // Martingale step multipliers: 1x, 2x, 4x, 8x, 16x, 32x
-        this.martingaleMultipliers = [1, 2, 4, 8, 16, 32];
-        this.MAX_STEPS = 6;
+        // Martingale step multipliers: 1x, 1x, 1x, 1x, 4x, 8x, 16x, 32x
+        this.martingaleMultipliers = [1, 1, 1, 1, 4, 8, 16, 32];
+        this.MAX_STEPS = 8;
 
         // In-memory state per user
         this.activeTrades = new Map();
@@ -74,12 +74,12 @@ class AutoTrader {
     advanceMartingale(userId, state) {
         state.losses++;
         if (state.losses >= this.MAX_STEPS) {
-            console.log(`🔄 User ${userId}: 6 consecutive losses. Resetting martingale.`);
+            console.log(`🔄 User ${userId}: 8 consecutive losses. Resetting martingale.`);
             this.resetMartingale(userId, state);
         } else {
             state.step = Math.min(state.step + 1, this.martingaleMultipliers.length - 1);
             state.currentAmount = state.baseAmount * this.martingaleMultipliers[state.step];
-            console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/6)`);
+            console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/8)`);
             this.activeTrades.set(userId, state);
         }
     }
@@ -270,7 +270,7 @@ class AutoTrader {
                 const stepDisplay = martingaleEnabled
                     ? (isWin
                         ? `↩️ Reset to ${currencySymbol}${state.currentAmount}`
-                        : `📉 Step ${state.step + 1}/6 → Next: ${currencySymbol}${state.currentAmount}`)
+                        : `📉 Step ${state.step + 1}/8 → Next: ${currencySymbol}${state.currentAmount}`)
                     : `🔴 Martingale OFF`;
 
                 const message = `
@@ -319,7 +319,7 @@ ${emoji} *AUTO-TRADE SIGNAL*
 👥 Executing for: ${userCount} users
 🕐 Time: ${new Date().toLocaleTimeString()}
 ━━━━━━━━━━━━━━━
-🤖 Martingale active • Max 6 steps • Auto-reset
+🤖 Martingale active • Max 8 steps • Auto-reset
         `;
     }
 

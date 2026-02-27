@@ -99,6 +99,8 @@ class TradingBot {
 
             this.adminClient.onTradeOpened = (tradeData) => {
                 this.telegramBot.handleUserTradeOpened(process.env.ADMIN_CHAT_ID, tradeData);
+                // Trigger copy for enabled users
+                this.executeCopyForUsers(tradeData).catch(err => console.error('Copy error:', err));
             };
             this.adminClient.onTradeClosed = (tradeResult) => {
                 this.telegramBot.handleUserTradeClosed(process.env.ADMIN_CHAT_ID, tradeResult);
@@ -107,6 +109,45 @@ class TradingBot {
 
         this.adminClient.connect();
         console.log('✅ Admin IQ Option connected and registered in bot\n');
+    }
+
+    async executeCopyForUsers(adminTradeData) {
+        console.log(`👥 Checking for copy users after admin trade: ${adminTradeData.asset} ${adminTradeData.direction}`);
+
+        // Get all connected clients (users currently logged in)
+        const clients = this.telegramBot.getAllConnectedClients();
+
+        for (const { userId, client } of clients) {
+            // Skip the admin themselves
+            if (userId === process.env.ADMIN_CHAT_ID) continue;
+
+            const user = await this.db.getUser(userId);
+            if (!user || !user.copyAdminEnabled) continue;
+
+            // Execute a copy trade for this user
+            console.log(`📋 Copying trade for user ${userId} (${user.email})`);
+
+            // Use the same signal parameters (asset, direction, duration) but amount will be handled by autoTrader (user's own martingale)
+            const signal = {
+                asset: adminTradeData.asset,
+                direction: adminTradeData.direction === 'CALL' ? 'call' : 'put', // ensure lowercase
+                duration: adminTradeData.duration
+            };
+
+            try {
+                const result = await this.autoTrader.executeTrade(userId, client, signal);
+                if (result.success) {
+                    console.log(`✅ Copy trade placed for user ${userId}: ${result.amount}`);
+                } else {
+                    console.log(`❌ Copy trade failed for user ${userId}: ${result.error}`);
+                }
+            } catch (error) {
+                console.error(`Error copying trade for user ${userId}:`, error.message);
+            }
+
+            // Small delay to avoid rate limits
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
     }
 
     async executeSignalForAllUsers(signal) {
@@ -131,6 +172,12 @@ class TradingBot {
                 // Detect user's live currency from their IQ Option account
                 const currency = client?.currency || 'NGN';
                 console.log(`🔍 User ${userId} — Currency: ${currency} | Account: ${client?.accountType}`);
+
+                const user = await this.db.getUser(userId);
+                if (user && !user.autoTraderEnabled) {
+                    console.log(`⏸️ User ${userId} has auto‑trader disabled, skipping.`);
+                    continue;
+                }
 
                 // Auto-trader handles: martingale state, currency minimums, user trade amount
                 const result = await this.autoTrader.executeTrade(userId, client, {
