@@ -49,14 +49,22 @@ class AutoTrader {
             return this.activeTrades.get(userId);
         }
 
+        // Always use the user's current tradeAmount as the authoritative base.
+        // This prevents a stale DB base_amount from overriding a user's /setamount update.
         const base = this.getBaseAmount(user, currency);
         const db = user?.martingale || {};
 
+        // If the user changed their tradeAmount, the stored base_amount in DB will be wrong.
+        // We detect this by comparing: if user's current base differs from stored base,
+        // we reset step/losses and use the new base.
+        const storedBase = db.base_amount || base;
+        const baseChanged = storedBase !== base;
+
         const state = {
-            step: db.current_step || 0,
-            losses: db.loss_streak || 0,
-            baseAmount: db.base_amount || base,
-            currentAmount: db.current_amount || base,
+            step: baseChanged ? 0 : (db.current_step || 0),
+            losses: baseChanged ? 0 : (db.loss_streak || 0),
+            baseAmount: base,                                         // Always use current tradeAmount
+            currentAmount: baseChanged ? base : (db.current_amount || base),
             initialBalance: db.initial_balance || 0,
         };
 
