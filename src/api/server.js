@@ -21,7 +21,7 @@ app.post('/api/signals/create', async (req, res) => {
         return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Improved direction mapping
+    // Improved direction mapping - case insensitive
     const rawSignal = signal.toLowerCase().trim();
     let direction;
     if (['buy', 'call', 'higher', 'up'].includes(rawSignal)) {
@@ -29,7 +29,6 @@ app.post('/api/signals/create', async (req, res) => {
     } else if (['sell', 'put', 'lower', 'down'].includes(rawSignal)) {
         direction = 'put';
     } else {
-        // Unknown signal – default to call? Or error? We'll log and default to call.
         console.warn(`⚠️ Unknown signal value: "${signal}", defaulting to call.`);
         direction = 'call';
     }

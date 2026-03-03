@@ -109,21 +109,20 @@ class TelegramBot {
                 const welcomeMsg =
                     '🤖 *Welcome to IQ Option Auto-Trading Bot!*\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
-                    'This bot connects to your IQ Option account and automatically trades based on professional signals.\n\n' +
-                    '*🟢 HOW TO GET STARTED:*\n\n' +
-                    '*Step 1 — Get an Access Code*\n' +
-                    'Contact your admin to receive a unique access code.\n\n' +
-                    '*Step 2 — Activate Your Code*\n' +
+                    'To start trading, you need two things:\n\n' +
+                    '*1️⃣ Create an IQ Option Account*\n' +
+                    'Use this link to sign up:\n' +
+                    '👉 [Click Here to Register](https://affiliate.iqoption.net/redir/?aff=785369&aff_model=revenue&afftrack=)\n\n' +
+                    '*2️⃣ Get an Access Code*\n' +
+                    'Contact @niels_official to receive your unique access code.\n\n' +
+                    '*3️⃣ Activate Your Code*\n' +
                     'Send: `/start IQ-XXXX-XXXX-XXXX`\n\n' +
-                    '*Step 3 — Connect Your IQ Option Account*\n' +
-                    'Send: `/login your@email.com yourpassword`\n\n' +
-                    '*Step 4 — Set Your Trade Amount*\n' +
-                    'Send: `/setamount 1500`\n\n' +
-                    '*Step 5 — Sit Back!*\n' +
-                    'Signals are sent automatically. You get notified on every trade.\n\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
-                    '_Contact your admin to get an access code._';
-                return ctx.reply(welcomeMsg, { parse_mode: 'Markdown' });
+                    '_Need help? Contact @niels_official_';
+                return ctx.reply(welcomeMsg, {
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: true
+                });
             }
 
             try {
@@ -525,12 +524,18 @@ class TelegramBot {
                     '🤖 *Welcome to IQ Option Auto-Trading Bot!*\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
                     '*To get started:*\n\n' +
-                    '1. Get an access code from admin\n' +
-                    '2. `/start IQ-XXXX-XXXX-XXXX`\n' +
-                    '3. `/login your@email.com yourpassword`\n' +
-                    '4. `/setamount 1500`\n\n' +
-                    '_Contact your admin for an access code._';
-                await ctx.reply(guestHelp, { parse_mode: 'Markdown' });
+                    '1. Create an IQ Option account using this link:\n' +
+                    '👉 [Click Here to Register](https://affiliate.iqoption.net/redir/?aff=785369&aff_model=revenue&afftrack=)\n\n' +
+                    '2. Get an access code from @niels_official\n\n' +
+                    '3. Use `/start IQ-XXXX-XXXX-XXXX` to activate\n\n' +
+                    '4. Login with `/login your@email.com yourpassword`\n\n' +
+                    '5. Set your trade amount with `/setamount 1500`\n\n' +
+                    '━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
+                    '_Contact @niels_official for an access code._';
+                await ctx.reply(guestHelp, {
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: true
+                });
             }
         });
 
@@ -733,6 +738,7 @@ class TelegramBot {
             await this.db.updateUser(ctx.from.id, { autoTraderEnabled: false });
             await ctx.reply('📴 *Auto‑trader stopped.*\nYou will no longer receive signals from TradingView.', { parse_mode: 'Markdown' });
         });
+
         // 🔍 DEBUG: Show current connections (admin only)
         this.bot.command('debug_connections', async (ctx) => {
             if (!ctx.state.user?.is_admin) {
@@ -750,6 +756,7 @@ class TelegramBot {
             }
             await ctx.reply(msg, { parse_mode: 'Markdown' });
         });
+
         // Optional: command to re‑enable auto‑trader
         this.bot.command('startautotrader', async (ctx) => {
             if (!ctx.state.user) return ctx.reply('❌ Please login first.');
@@ -758,7 +765,7 @@ class TelegramBot {
         });
     }
 
-    // ✅ SIGNAL MESSAGE - EXACT FORMAT
+    // ✅ UPDATED: Channel notifications only for admin (7159524412)
     async handleUserTradeOpened(userId, tradeData) {
         try {
             const user = await this.db.getUser(userId);
@@ -766,6 +773,7 @@ class TelegramBot {
             const symbol = this.getCurrencySymbol(client?.currency || user.currency || 'USD');
 
             const channels = await this.db.getActiveChannels();
+            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
 
             const message = `
 🟢 NEW TRADE SIGNAL
@@ -778,19 +786,34 @@ class TelegramBot {
 
             `;
 
-            console.log(`📤 Sending trade opened notification: ${tradeData.asset}`);
+            console.log(`📤 Sending trade opened notification for user ${userId}`);
 
-            for (const channel of channels) {
-                try {
-                    await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
-                } catch (err) {
-                    console.error(`Failed to send to channel:`, err.message);
+            // 1. Send to channel ONLY if this is the admin (7159524412)
+            if (userId === adminId) {
+                for (const channel of channels) {
+                    try {
+                        await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
+                        console.log(`✅ Admin trade sent to channel ${channel.channel_id}`);
+                    } catch (err) {
+                        console.error(`Failed to send admin trade to channel:`, err.message);
+                    }
                 }
             }
 
-            const adminId = process.env.ADMIN_CHAT_ID;
-            if (adminId) {
-                await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+            // 2. Send to user's DM (always)
+            try {
+                await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
+            } catch (err) {
+                console.error(`Failed to send to user ${userId}:`, err.message);
+            }
+
+            // 3. Send to admin DM for monitoring (always)
+            if (adminId && adminId !== userId) {
+                try {
+                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+                } catch (err) {
+                    console.error(`Failed to send to admin:`, err.message);
+                }
             }
 
         } catch (error) {
@@ -798,13 +821,14 @@ class TelegramBot {
         }
     }
 
-    // ✅ RESULT MESSAGE - EXACT FORMAT (ONLY WIN/LOSS + ASSET)
+    // ✅ UPDATED: Channel notifications only for admin (7159524412)
     async handleUserTradeClosed(userId, tradeResult) {
         try {
             const user = await this.db.getUser(userId);
             if (!user) return;
 
             const channels = await this.db.getActiveChannels();
+            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
 
             const resultEmoji = tradeResult.isWin ? '✅' : '❌';
             const resultText = tradeResult.isWin ? 'WIN' : 'LOSS';
@@ -816,19 +840,34 @@ ${resultEmoji} ${resultText}
 
             `;
 
-            console.log(`📤 Sending trade result: ${tradeResult.asset} ${tradeResult.isWin ? 'WIN' : 'LOSS'}`);
+            console.log(`📤 Sending trade result for user ${userId}: ${tradeResult.isWin ? 'WIN' : 'LOSS'}`);
 
-            for (const channel of channels) {
-                try {
-                    await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
-                } catch (err) {
-                    console.error(`Failed to send to channel:`, err.message);
+            // 1. Send to channel ONLY if this is the admin (7159524412)
+            if (userId === adminId) {
+                for (const channel of channels) {
+                    try {
+                        await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
+                        console.log(`✅ Admin result sent to channel ${channel.channel_id}`);
+                    } catch (err) {
+                        console.error(`Failed to send admin result to channel:`, err.message);
+                    }
                 }
             }
 
-            const adminId = process.env.ADMIN_CHAT_ID;
-            if (adminId) {
-                await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+            // 2. Send to user's DM (always)
+            try {
+                await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
+            } catch (err) {
+                console.error(`Failed to send to user ${userId}:`, err.message);
+            }
+
+            // 3. Send to admin DM for monitoring (always)
+            if (adminId && adminId !== userId) {
+                try {
+                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+                } catch (err) {
+                    console.error(`Failed to send to admin:`, err.message);
+                }
             }
 
         } catch (error) {
