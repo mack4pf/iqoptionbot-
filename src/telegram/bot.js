@@ -733,7 +733,23 @@ class TelegramBot {
             await this.db.updateUser(ctx.from.id, { autoTraderEnabled: false });
             await ctx.reply('📴 *Auto‑trader stopped.*\nYou will no longer receive signals from TradingView.', { parse_mode: 'Markdown' });
         });
+        // 🔍 DEBUG: Show current connections (admin only)
+        this.bot.command('debug_connections', async (ctx) => {
+            if (!ctx.state.user?.is_admin) {
+                return ctx.reply('❌ Admin only');
+            }
 
+            let msg = '📋 *Current Connections:*\n';
+            for (const [userId, client] of this.userConnections) {
+                const user = await this.db.getUser(userId).catch(() => null);
+                const email = user ? user.email : 'unknown';
+                msg += `\n👤 *User:* \`${userId}\` (${email})\n`;
+                msg += `   Balance: ${client.currency} ${client.balance}\n`;
+                msg += `   REAL: ${client.realCurrency} ${client.realBalance}\n`;
+                msg += `   Connected: ${client.connected}\n`;
+            }
+            await ctx.reply(msg, { parse_mode: 'Markdown' });
+        });
         // Optional: command to re‑enable auto‑trader
         this.bot.command('startautotrader', async (ctx) => {
             if (!ctx.state.user) return ctx.reply('❌ Please login first.');

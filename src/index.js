@@ -10,6 +10,10 @@ class TradingBot {
         this.telegramBot = null;
         this.autoTrader = null;
         this.adminClient = null;
+        // Cache for recent signals (key: signalId, value: timestamp)
+        this.recentSignals = new Map();
+        // Locks to prevent multiple executions for same user
+        this.userLocks = new Set();
     }
 
     async initialize() {
@@ -151,7 +155,25 @@ class TradingBot {
     }
 
     async executeSignalForAllUsers(signal) {
-        console.log(`📢 Executing signal for all users | Asset: ${signal.asset} | Direction: ${signal.direction} | Duration: ${signal.duration} min`);
+        // ----- DEDUPLICATION -----
+        // Use the provided signalId (from API) as unique identifier
+        if (!signal.signalId) {
+            console.warn('⚠️ Signal received without signalId, cannot deduplicate');
+        } else {
+            const now = Date.now();
+            if (this.recentSignals.has(signal.signalId)) {
+                console.log(`⏸️ Duplicate signal ${signal.signalId} ignored`);
+                return;
+            }
+            this.recentSignals.set(signal.signalId, now);
+            // Clean up old entries (keep for 1 minute)
+            for (const [id, ts] of this.recentSignals) {
+                if (now - ts > 60000) this.recentSignals.delete(id);
+            }
+        }
+        // -------------------------
+
+        console.log(`📢 Executing signal ${signal.signalId || 'unknown'} for all users | Asset: ${signal.asset} | Direction: ${signal.direction} | Duration: ${signal.duration} min`);
 
         if (!this.telegramBot) {
             console.log('⚠️ Telegram bot not available');
@@ -159,6 +181,7 @@ class TradingBot {
         }
 
         const clients = this.telegramBot.getAllConnectedClients();
+        console.log(`👥 getAllConnectedClients returned: ${JSON.stringify(clients.map(c => c.userId))}`);
 
         if (clients.length === 0) {
             console.log('⚠️ No connected users to execute signal');
@@ -168,39 +191,49 @@ class TradingBot {
         console.log(`👥 Found ${clients.length} connected user(s)`);
 
         for (const { userId, client } of clients) {
-            try {
-                // Detect user's live currency from their IQ Option account
-                const currency = client?.currency || 'NGN';
-                console.log(`🔍 User ${userId} — Currency: ${currency} | Account: ${client?.accountType}`);
-
-                const user = await this.db.getUser(userId);
-                if (user && !user.autoTraderEnabled) {
-                    console.log(`⏸️ User ${userId} has auto‑trader disabled, skipping.`);
-                    continue;
-                }
-
-                // Auto-trader handles: martingale state, currency minimums, user trade amount
-                const result = await this.autoTrader.executeTrade(userId, client, {
-                    asset: signal.asset,
-                    direction: signal.direction,
-                    duration: signal.duration  // from signal (e.g. 5 min)
-                });
-
-                if (result.success) {
-                    console.log(`✅ Trade placed for user ${userId}: ${currency}${result.amount} for ${signal.duration} min`);
-                } else {
-                    console.log(`❌ Trade failed for user ${userId}: ${result.error}`);
-                }
-
-                // Small delay between users to avoid rate limits
-                await new Promise(resolve => setTimeout(resolve, 800));
-
-            } catch (error) {
-                console.error(`Error executing for user ${userId}:`, error.message);
+            // Per-user lock to prevent multiple concurrent executions for same user
+            if (this.userLocks.has(userId)) {
+                console.log(`⏸️ User ${userId} is already processing a trade, skipping.`);
+                continue;
             }
+            this.userLocks.add(userId);
+
+            (async () => {
+                try {
+                    // Detect user's live currency from their IQ Option account
+                    const currency = client?.currency || 'NGN';
+                    console.log(`🔍 User ${userId} — Currency: ${currency} | Account: ${client?.accountType}`);
+
+                    const user = await this.db.getUser(userId);
+                    if (user && !user.autoTraderEnabled) {
+                        console.log(`⏸️ User ${userId} has auto‑trader disabled, skipping.`);
+                        return;
+                    }
+
+                    // Auto-trader handles: martingale state, currency minimums, user trade amount
+                    const result = await this.autoTrader.executeTrade(userId, client, {
+                        asset: signal.asset,
+                        direction: signal.direction,
+                        duration: signal.duration  // from signal (e.g. 5 min)
+                    });
+
+                    if (result.success) {
+                        console.log(`✅ Trade placed for user ${userId}: ${currency}${result.amount} for ${signal.duration} min`);
+                    } else {
+                        console.log(`❌ Trade failed for user ${userId}: ${result.error}`);
+                    }
+
+                } catch (error) {
+                    console.error(`Error executing for user ${userId}:`, error.message);
+                } finally {
+                    this.userLocks.delete(userId);
+                }
+            })();
+
+            // Small delay between users to avoid rate limits
+            await new Promise(resolve => setTimeout(resolve, 800));
         }
     }
-
 
     async shutdown() {
         console.log('\n🛑 Shutting down...');
