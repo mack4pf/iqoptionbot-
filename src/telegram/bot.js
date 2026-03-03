@@ -1287,8 +1287,10 @@ ${resultEmoji} ${resultText}
 
     getAllConnectedClients() {
         const clients = [];
+        const seen = new Set(); // Add this to track unique users
         for (const [userId, client] of this.userConnections) {
-            if (client.connected) {
+            if (client.connected && !seen.has(userId)) {
+                seen.add(userId);
                 clients.push({ userId, client });
             }
         }

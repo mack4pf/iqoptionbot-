@@ -4,6 +4,7 @@ const AutoTrader = require('./core/auto-trader');
 const apiServer = require('./api/server');
 require('dotenv').config();
 
+this.signalUserTrades = new Map();
 class TradingBot {
     constructor() {
         this.db = null;
@@ -156,7 +157,6 @@ class TradingBot {
 
     async executeSignalForAllUsers(signal) {
         // ----- DEDUPLICATION -----
-        // Use the provided signalId (from API) as unique identifier
         if (!signal.signalId) {
             console.warn('⚠️ Signal received without signalId, cannot deduplicate');
         } else {
@@ -166,7 +166,6 @@ class TradingBot {
                 return;
             }
             this.recentSignals.set(signal.signalId, now);
-            // Clean up old entries (keep for 1 minute)
             for (const [id, ts] of this.recentSignals) {
                 if (now - ts > 60000) this.recentSignals.delete(id);
             }
@@ -191,16 +190,30 @@ class TradingBot {
         console.log(`👥 Found ${clients.length} connected user(s)`);
 
         for (const { userId, client } of clients) {
-            // Per-user lock to prevent multiple concurrent executions for same user
+            // Per-user lock
             if (this.userLocks.has(userId)) {
                 console.log(`⏸️ User ${userId} is already processing a trade, skipping.`);
                 continue;
             }
             this.userLocks.add(userId);
 
+            // Track if this user already traded for this signal
+            const tradeKey = `${signal.signalId}_${userId}`;
+            if (this.signalUserTrades?.has(tradeKey)) {
+                console.log(`⏸️ User ${userId} already traded for signal ${signal.signalId}, skipping.`);
+                this.userLocks.delete(userId);
+                continue;
+            }
+            if (!this.signalUserTrades) this.signalUserTrades = new Map();
+            this.signalUserTrades.set(tradeKey, true);
+
+            // Clean up after 5 minutes
+            setTimeout(() => {
+                if (this.signalUserTrades) this.signalUserTrades.delete(tradeKey);
+            }, 300000);
+
             (async () => {
                 try {
-                    // Detect user's live currency from their IQ Option account
                     const currency = client?.currency || 'NGN';
                     console.log(`🔍 User ${userId} — Currency: ${currency} | Account: ${client?.accountType}`);
 
@@ -210,11 +223,10 @@ class TradingBot {
                         return;
                     }
 
-                    // Auto-trader handles: martingale state, currency minimums, user trade amount
                     const result = await this.autoTrader.executeTrade(userId, client, {
                         asset: signal.asset,
                         direction: signal.direction,
-                        duration: signal.duration  // from signal (e.g. 5 min)
+                        duration: signal.duration
                     });
 
                     if (result.success) {
@@ -230,11 +242,9 @@ class TradingBot {
                 }
             })();
 
-            // Small delay between users to avoid rate limits
             await new Promise(resolve => setTimeout(resolve, 800));
         }
     }
-
     async shutdown() {
         console.log('\n🛑 Shutting down...');
         if (this.adminClient) this.adminClient.disconnect();
