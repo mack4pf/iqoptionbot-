@@ -21,31 +21,40 @@ app.post('/api/signals/create', async (req, res) => {
         return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Map signal: 'buy' -> 'call', 'sell' -> 'put', handling case-sensitivity
-    const direction = signal.toLowerCase() === 'buy' ? 'call' : 'put';
-    // TradingView sends `time` in seconds (e.g. 300 = 5 min).
-    // Convert to minutes and fallback to 5 min if zero/missing.
-    const rawDuration = Math.floor(time / 60);
-    const duration = rawDuration > 0 ? rawDuration : 5; // Default: 5 minutes
+    // Improved direction mapping
+    const rawSignal = signal.toLowerCase().trim();
+    let direction;
+    if (['buy', 'call', 'higher', 'up'].includes(rawSignal)) {
+        direction = 'call';
+    } else if (['sell', 'put', 'lower', 'down'].includes(rawSignal)) {
+        direction = 'put';
+    } else {
+        // Unknown signal – default to call? Or error? We'll log and default to call.
+        console.warn(`⚠️ Unknown signal value: "${signal}", defaulting to call.`);
+        direction = 'call';
+    }
 
-    // Generate a unique signal ID (for tracking, optional)
+    // Convert seconds to minutes
+    const rawDuration = Math.floor(time / 60);
+    const duration = rawDuration > 0 ? rawDuration : 5; // Default 5 minutes
+
     const signalId = `SIG_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
-    console.log(`📡 Received signal: ${signal} on ${ticker} for ${duration} min`);
+    console.log(`📡 Received signal: ${signal} (raw) on ${ticker} for ${duration} min → mapped direction: ${direction}`);
 
-    // Respond immediately – do NOT await the trading
+    // Respond immediately
     res.json({
         status: 'success',
         signalId: signalId
     });
 
-    // Trigger auto‑trading in the background
+    // Trigger auto‑trading in background
     if (tradingBotInstance) {
         tradingBotInstance.executeSignalForAllUsers({
-            asset: ticker,          // e.g., 'EURUSD'
+            asset: ticker,
             direction: direction,
             duration: duration,
-            price: price,            // optional, for logging
+            price: price,
             signalId: signalId
         }).catch(err => console.error('❌ Signal execution error:', err));
     } else {
@@ -53,16 +62,15 @@ app.post('/api/signals/create', async (req, res) => {
     }
 });
 
-// (Optional) Result endpoint – if you want to log outcomes
+// (Optional) Result endpoint
 app.post('/api/signals/result', async (req, res) => {
     const adminSecret = req.headers['x-admin-secret'];
     if (!adminSecret || adminSecret !== process.env.SIGNAL_SECRET) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const { signalId, signal } = req.body; // signal: "WIN" or "LOSS"
+    const { signalId, signal } = req.body;
     console.log(`📊 Result for ${signalId}: ${signal}`);
-    // You could store this in your database for analytics
     res.json({ status: 'success' });
 });
 
