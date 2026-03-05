@@ -61,17 +61,7 @@ app.post('/api/signals/create', async (req, res) => {
     }
 });
 
-// (Optional) Result endpoint
-app.post('/api/signals/result', async (req, res) => {
-    const adminSecret = req.headers['x-admin-secret'];
-    if (!adminSecret || adminSecret !== process.env.SIGNAL_SECRET) {
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const { signalId, signal } = req.body;
-    console.log(`📊 Result for ${signalId}: ${signal}`);
-    res.json({ status: 'success' });
-});
+// ❌ RESULT ENDPOINT REMOVED - TradingView results are ignored
 
 function startServer(port = 3000) {
     app.listen(port, () => {
