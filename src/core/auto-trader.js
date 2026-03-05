@@ -11,6 +11,12 @@ class AutoTrader {
 
         // In-memory state per user
         this.activeTrades = new Map();
+        
+        // NEW: Track open positions per user
+        this.openPositions = new Map(); // userId -> tradeId
+        
+        // NEW: Track last trade close time per user (for cooldown)
+        this.lastTradeCloseTime = new Map(); // userId -> timestamp
 
         // Minimum trade amounts per currency
         this.currencyMinimums = {
@@ -113,6 +119,28 @@ class AutoTrader {
 
     async executeTrade(userId, client, signal) {
         try {
+            // 🛑 NEW: Check if user has an open position
+            if (this.openPositions.has(userId)) {
+                const openTradeId = this.openPositions.get(userId);
+                console.log(`⏸️ User ${userId} has OPEN position (Trade ID: ${openTradeId}). IGNORING signal.`);
+                return { 
+                    success: false, 
+                    error: 'User has open position - trade blocked' 
+                };
+            }
+
+            // 🛑 NEW: Check 10 second cooldown after last trade close
+            if (this.lastTradeCloseTime.has(userId)) {
+                const timeSinceLastClose = Date.now() - this.lastTradeCloseTime.get(userId);
+                if (timeSinceLastClose < 10000) { // 10 seconds
+                    console.log(`⏸️ User ${userId} traded ${timeSinceLastClose}ms ago. IGNORING signal (10s cooldown).`);
+                    return { 
+                        success: false, 
+                        error: `Cooldown active - wait ${10 - Math.floor(timeSinceLastClose/1000)}s` 
+                    };
+                }
+            }
+
             const user = await this.db.getUser(userId);
             const martingaleEnabled = user?.martingale_enabled !== false;
 
@@ -158,6 +186,10 @@ class AutoTrader {
             if (!result.success) {
                 return { success: false, error: result.error };
             }
+
+            // ✅ NEW: Track open position
+            this.openPositions.set(userId, result.tradeId);
+            console.log(`🔒 User ${userId} now has OPEN position: ${result.tradeId}`);
 
             const tradeInfo = {
                 userId,
@@ -209,6 +241,12 @@ class AutoTrader {
         setTimeout(() => {
             client.ws?.removeListener('message', messageHandler);
             console.log(`⏰ Trade ${tradeInfo.tradeId} timeout (waited ${durationMs / 60000} min)`);
+            
+            // ✅ NEW: Clean up open position on timeout (just in case)
+            if (this.openPositions.has(userId) && this.openPositions.get(userId) === tradeInfo.tradeId) {
+                this.openPositions.delete(userId);
+                console.log(`🔓 User ${userId} open position cleared (timeout)`);
+            }
         }, durationMs + 30000);
     }
 
@@ -232,6 +270,16 @@ class AutoTrader {
 
             const currency = tradeInfo.currency || position.currency || 'USD';
             const currencySymbol = this.getCurrencySymbol(currency);
+
+            // ✅ NEW: Remove from open positions
+            if (this.openPositions.has(userId)) {
+                this.openPositions.delete(userId);
+                console.log(`🔓 User ${userId} open position cleared (trade closed)`);
+            }
+
+            // ✅ NEW: Set last trade close time for cooldown
+            this.lastTradeCloseTime.set(userId, Date.now());
+            console.log(`⏱️ User ${userId} cooldown started - 10 seconds`);
 
             // ── Martingale Update ──
             let state = this.activeTrades.get(userId);
@@ -346,6 +394,8 @@ ${emoji} *AUTO-TRADE SIGNAL*
 
     clearUserState(userId) {
         this.activeTrades.delete(userId);
+        this.openPositions.delete(userId);
+        this.lastTradeCloseTime.delete(userId);
     }
 }
 
