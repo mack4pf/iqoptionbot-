@@ -114,11 +114,11 @@ class TelegramBot {
                     'Use this link to sign up:\n' +
                     '👉 [Click Here to Register](https://affiliate.iqoption.net/redir/?aff=785369&aff_model=revenue&afftrack=)\n\n' +
                     '*2️⃣ Get an Access Code*\n' +
-                    'Contact https://t.me/niels_official to receive your unique access code.\n\n' +
+                    ' [GET ACCESS CODE](https://t.me/niels_official)\n\n' +
                     '*3️⃣ Activate Your Code*\n' +
                     'Send: `/start IQ-XXXX-XXXX-XXXX`\n\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
-                    '_Need help? Contact https://t.me/niels_official';
+                    '_Need help? Contact ADMIN';
                 return ctx.reply(welcomeMsg, {
                     parse_mode: 'Markdown',
                     disable_web_page_preview: true
@@ -526,12 +526,12 @@ class TelegramBot {
                     '*To get started:*\n\n' +
                     '1. Create an IQ Option account using this link:\n' +
                     '👉 [Click Here to Register](https://affiliate.iqoption.net/redir/?aff=785369&aff_model=revenue&afftrack=)\n\n' +
-                    '2. Get an access code from https://t.me/niels_official\n\n' +
+                    '2. [GET ACCESS CODE](https://t.me/niels_official)\n\n' 
                     '3. Use `/start IQ-XXXX-XXXX-XXXX` to activate\n\n' +
                     '4. Login with `/login your@email.com yourpassword`\n\n' +
                     '5. Set your trade amount with `/setamount 1500`\n\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
-                    '_Contact https://t.me/niels_official for an access code._';
+                    '_Contact @niels_official for an access code._';
                 await ctx.reply(guestHelp, {
                     parse_mode: 'Markdown',
                     disable_web_page_preview: true
