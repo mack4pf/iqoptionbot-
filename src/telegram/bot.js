@@ -531,7 +531,7 @@ class TelegramBot {
                     '4. Login with `/login your@email.com yourpassword`\n\n' +
                     '5. Set your trade amount with `/setamount 1500`\n\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
-                    '_Contact @niels_official for an access code._';
+                    '_Contact niels_official for an access code._';
                 await ctx.reply(guestHelp, {
                     parse_mode: 'Markdown',
                     disable_web_page_preview: true
