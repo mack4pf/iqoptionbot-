@@ -13,6 +13,12 @@ class TelegramBot {
         this.setupMenus();
         this.setupCommands();
         this.setupHandlers();
+
+        // Add global error handler
+        this.bot.catch((err, ctx) => {
+            console.error(`❌ Telegraf error for ${ctx.updateType}:`, err);
+            if (err.stack) console.error(err.stack);
+        });
     }
 
     setupMiddleware() {
@@ -68,7 +74,8 @@ class TelegramBot {
 
                 return next();
             } catch (error) {
-                console.error('Middleware error:', error);
+                console.error('❌ Middleware error:', error);
+                if (error.stack) console.error(error.stack);
                 return next();
             }
         });
@@ -118,7 +125,7 @@ class TelegramBot {
                     '*3️⃣ Activate Your Code*\n' +
                     'Send: `/start IQ-XXXX-XXXX-XXXX`\n\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
-                    '_Need help? Contact ADMIN';
+                    '_Need help? Contact ADMIN_';
                 return ctx.reply(welcomeMsg, {
                     parse_mode: 'Markdown',
                     disable_web_page_preview: true
@@ -526,7 +533,7 @@ class TelegramBot {
                     '*To get started:*\n\n' +
                     '1. Create an IQ Option account using this link:\n' +
                     '👉 [Click Here to Register](https://affiliate.iqoption.net/redir/?aff=785369&aff_model=revenue&afftrack=)\n\n' +
-                    '2. [GET ACCESS CODE](https://t.me/niels_official)\n\n' 
+                    '2. [GET ACCESS CODE](https://t.me/niels_official)\n\n' +
                     '3. Use `/start IQ-XXXX-XXXX-XXXX` to activate\n\n' +
                     '4. Login with `/login your@email.com yourpassword`\n\n' +
                     '5. Set your trade amount with `/setamount 1500`\n\n' +
