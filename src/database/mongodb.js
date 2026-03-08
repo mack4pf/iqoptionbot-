@@ -116,7 +116,7 @@ class MongoDB {
                     email: 'admin@local',
                     password_encrypted: 'admin',
                     account_type: 'PRACTICE',
-                    tradeAmount: 1500, // Default trade amount for admin
+                    tradeAmount: 1500,
                     balance: 0,
                     copyAdminEnabled: false,
                     autoTraderEnabled: true,
@@ -216,7 +216,13 @@ class MongoDB {
         }).toArray();
     }
 
-    // ✅ UPDATED: registerUserWithCode now includes tradeAmount field
+    // ✅ NEW: Delete user completely
+    async deleteUser(chatId) {
+        const users = this.db.collection('users');
+        const result = await users.deleteOne({ _id: chatId.toString() });
+        return result.deletedCount > 0;
+    }
+
     async registerUserWithCode(chatId, email, password, code) {
         const accessCode = await this.validateAccessCode(code);
         if (!accessCode) {
@@ -238,7 +244,7 @@ class MongoDB {
             email,
             password_encrypted: encrypted,
             account_type: 'PRACTICE',
-            tradeAmount: 1500, // ✅ DEFAULT TRADE AMOUNT (1500 NGN)
+            tradeAmount: 1500,
             copyAdminEnabled: false,
             autoTraderEnabled: true,
             balance: 0,
@@ -295,11 +301,8 @@ class MongoDB {
     }
 
     async revokeUserAccess(chatId) {
-        const users = this.db.collection('users');
-        return await users.updateOne(
-            { _id: chatId.toString() },
-            { $set: { access_expires_at: new Date() } }
-        );
+        // This now DELETES the user completely
+        return await this.deleteUser(chatId);
     }
 
     async addSignalChannel(adminChatId, channelId, channelName) {

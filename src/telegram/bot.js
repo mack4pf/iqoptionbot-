@@ -107,7 +107,7 @@ class TelegramBot {
     }
 
     setupCommands() {
-        // Start command
+        // Start command - WITH VIDEO GUIDE
         this.bot.start(async (ctx) => {
             const args = ctx.message.text.split(' ');
             const code = args[1];
@@ -116,6 +116,8 @@ class TelegramBot {
                 const welcomeMsg =
                     '🤖 *Welcome to IQ Option Auto-Trading Bot!*\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
+                    '📺 *COMPLETE VIDEO GUIDE*\n' +
+                    'https://youtu.be/tePDDjJnMuM\n\n' +
                     'To start trading, you need two things:\n\n' +
                     '*1️⃣ Create an IQ Option Account*\n' +
                     'Use this link to sign up:\n' +
@@ -128,7 +130,7 @@ class TelegramBot {
                     '_Need help? Contact ADMIN_';
                 return ctx.reply(welcomeMsg, {
                     parse_mode: 'Markdown',
-                    disable_web_page_preview: true
+                    disable_web_page_preview: false
                 });
             }
 
@@ -238,6 +240,7 @@ class TelegramBot {
                 await ctx.reply(
                     '🎉 *Successfully Connected to IQ Option!*\n' +
                     '━━━━━━━━━━━━━━━\n\n' +
+                    '📺 [COMPLETE VIDEO GUIDE](https://youtu.be/tePDDjJnMuM)\n\n' +
                     '*What happens now?*\n' +
                     '• Signals execute trades automatically on your account\n' +
                     '• You get notified on every trade open & close\n' +
@@ -255,6 +258,7 @@ class TelegramBot {
                     '_Type /help anytime to see all commands._',
                     {
                         parse_mode: 'Markdown',
+                        disable_web_page_preview: false,
                         ...this.userMainMenu
                     }
                 );
@@ -476,7 +480,7 @@ class TelegramBot {
             );
         });
 
-        // Help command
+        // Help command - WITH VIDEO GUIDE
         this.bot.command('help', async (ctx) => {
             const user = ctx.state.user;
 
@@ -484,10 +488,12 @@ class TelegramBot {
                 const adminHelp =
                     '👑 *ADMIN GUIDE — IQ Option Trading Bot*\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
+                    '📺 *COMPLETE VIDEO GUIDE*\n' +
+                    'https://youtu.be/tePDDjJnMuM\n\n' +
                     '*🔐 ACCESS CODES*\n' +
                     '/generate — Create new 30-day access code\n' +
                     '/codes — List all active codes\n' +
-                    '/revoke [user_id] — Revoke user access\n\n' +
+                    '/revoke [user_id] — Delete user completely\n\n' +
                     '*👥 USER MANAGEMENT*\n' +
                     '/users — View all registered users\n' +
                     '/stats — Total users, trades, and profit\n\n' +
@@ -504,12 +510,17 @@ class TelegramBot {
                     '/status — Connection & account info\n' +
                     '/logout — Disconnect your account\n\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━';
-                await ctx.reply(adminHelp, { parse_mode: 'Markdown' });
+                await ctx.reply(adminHelp, { 
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: false
+                });
 
             } else if (user) {
                 const userHelp =
                     '🤖 *USER GUIDE — IQ Option Auto-Trader*\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
+                    '📺 *COMPLETE VIDEO GUIDE*\n' +
+                    'https://youtu.be/tePDDjJnMuM\n\n' +
                     '*✅ COMMANDS*\n\n' +
                     '/login — Connect your IQ Option account\n' +
                     '/setamount — Set your base trade amount\n' +
@@ -524,12 +535,17 @@ class TelegramBot {
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
                     '_Signals execute automatically_\n' +
                     '_You get notified on every trade_';
-                await ctx.reply(userHelp, { parse_mode: 'Markdown' });
+                await ctx.reply(userHelp, {
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: false
+                });
 
             } else {
                 const guestHelp =
                     '🤖 *Welcome to IQ Option Auto-Trading Bot!*\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
+                    '📺 *COMPLETE VIDEO GUIDE*\n' +
+                    'https://youtu.be/tePDDjJnMuM\n\n' +
                     '*To get started:*\n\n' +
                     '1. Create an IQ Option account using this link:\n' +
                     '👉 [Click Here to Register](https://affiliate.iqoption.net/redir/?aff=785369&aff_model=revenue&afftrack=)\n\n' +
@@ -541,7 +557,7 @@ class TelegramBot {
                     '_Contact niels_official for an access code._';
                 await ctx.reply(guestHelp, {
                     parse_mode: 'Markdown',
-                    disable_web_page_preview: true
+                    disable_web_page_preview: false
                 });
             }
         });
@@ -671,7 +687,7 @@ class TelegramBot {
             }
         });
 
-        // Admin: Revoke access
+        // Admin: Revoke user - NOW DELETES USER COMPLETELY
         this.bot.command('revoke', async (ctx) => {
             if (!ctx.state.user?.is_admin) return;
             const args = ctx.message.text.split(' ');
@@ -679,10 +695,23 @@ class TelegramBot {
 
             const targetId = args[1];
             try {
-                await this.db.revokeUserAccess(targetId);
-                await ctx.reply(`✅ *Access revoked for user:* \`${targetId}\``, { parse_mode: 'Markdown' });
+                // First disconnect them if connected
+                const client = this.userConnections.get(targetId);
+                if (client) {
+                    client.disconnect();
+                    this.userConnections.delete(targetId);
+                }
+                
+                // Then delete from database
+                const deleted = await this.db.deleteUser(targetId);
+                
+                if (deleted) {
+                    await ctx.reply(`✅ *User deleted completely:* \`${targetId}\`\nThey will need a new access code to use the bot again.`, { parse_mode: 'Markdown' });
+                } else {
+                    await ctx.reply(`❌ User \`${targetId}\` not found.`, { parse_mode: 'Markdown' });
+                }
             } catch (error) {
-                ctx.reply('❌ Failed to revoke access: ' + error.message);
+                ctx.reply('❌ Failed to delete user: ' + error.message);
             }
         });
 
