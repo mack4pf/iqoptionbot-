@@ -493,7 +493,7 @@ class TelegramBot {
                     '*🔐 ACCESS CODES*\n' +
                     '/generate — Create new 30-day access code\n' +
                     '/codes — List all active codes\n' +
-                    '/revoke [user_id] — Delete user completely\n\n' +
+                    '/revoke — Show list of users to revoke\n\n' +
                     '*👥 USER MANAGEMENT*\n' +
                     '/users — View all registered users\n' +
                     '/stats — Total users, trades, and profit\n\n' +
@@ -687,31 +687,43 @@ class TelegramBot {
             }
         });
 
-        // Admin: Revoke user - NOW DELETES USER COMPLETELY
+        // ✅ NEW: Admin: Revoke user - SHOWS LIST OF USERS WITH BUTTONS
         this.bot.command('revoke', async (ctx) => {
-            if (!ctx.state.user?.is_admin) return;
-            const args = ctx.message.text.split(' ');
-            if (args.length < 2) return ctx.reply('❌ *Usage:* `/revoke [user_id]`', { parse_mode: 'Markdown' });
-
-            const targetId = args[1];
+            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
+            
             try {
-                // First disconnect them if connected
-                const client = this.userConnections.get(targetId);
-                if (client) {
-                    client.disconnect();
-                    this.userConnections.delete(targetId);
+                const users = await this.db.getAllUsers();
+                const activeUsers = users.filter(u => !u.is_admin);
+                
+                if (activeUsers.length === 0) {
+                    return ctx.reply('👥 No users to revoke.');
                 }
                 
-                // Then delete from database
-                const deleted = await this.db.deleteUser(targetId);
+                let message = '🔴 *Select user to revoke:*\n\n';
+                const buttons = [];
                 
-                if (deleted) {
-                    await ctx.reply(`✅ *User deleted completely:* \`${targetId}\`\nThey will need a new access code to use the bot again.`, { parse_mode: 'Markdown' });
-                } else {
-                    await ctx.reply(`❌ User \`${targetId}\` not found.`, { parse_mode: 'Markdown' });
+                // Create a button for each user
+                for (const user of activeUsers) {
+                    message += `👤 *${user.email}*\n`;
+                    message += `   ID: \`${user._id}\`\n`;
+                    message += `   Status: ${user.connected ? '🟢 Online' : '🔴 Offline'}\n`;
+                    message += `   Trades: ${user.stats?.total_trades || 0}\n\n`;
+                    
+                    buttons.push([
+                        Markup.button.callback(
+                            `❌ Revoke ${user.email.split('@')[0]}`, 
+                            `revoke_${user._id}`
+                        )
+                    ]);
                 }
+                
+                await ctx.reply(message, {
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard(buttons)
+                });
+                
             } catch (error) {
-                ctx.reply('❌ Failed to delete user: ' + error.message);
+                ctx.reply('❌ Failed to get users: ' + error.message);
             }
         });
 
@@ -801,120 +813,7 @@ class TelegramBot {
         });
     }
 
-    // ✅ UPDATED: Channel notifications only for admin (7159524412)
-    async handleUserTradeOpened(userId, tradeData) {
-        try {
-            const user = await this.db.getUser(userId);
-            const client = this.getUserClient(userId);
-            const symbol = this.getCurrencySymbol(client?.currency || user.currency || 'USD');
-
-            const channels = await this.db.getActiveChannels();
-            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
-
-            const message = `
-🟢 NEW TRADE SIGNAL
-━━━━━━━━━━━━━━━
-👤 User: ${userId}
-📊 Asset: ${tradeData.asset}
-📈 Direction: ${tradeData.direction === 'CALL' ? 'BUY' : 'SELL'}
-💰 Amount: ${symbol}${tradeData.amount}
-⏱️ Duration: ${tradeData.duration} min
-
-            `;
-
-            console.log(`📤 Sending trade opened notification for user ${userId}`);
-
-            // 1. Send to channel ONLY if this is the admin (7159524412)
-            if (userId === adminId) {
-                for (const channel of channels) {
-                    try {
-                        await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
-                        console.log(`✅ Admin trade sent to channel ${channel.channel_id}`);
-                    } catch (err) {
-                        console.error(`Failed to send admin trade to channel:`, err.message);
-                    }
-                }
-            }
-
-            // 2. Send to user's DM (always)
-            try {
-                await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
-            } catch (err) {
-                console.error(`Failed to send to user ${userId}:`, err.message);
-            }
-
-            // 3. Send to admin DM for monitoring (always)
-            if (adminId && adminId !== userId) {
-                try {
-                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
-                } catch (err) {
-                    console.error(`Failed to send to admin:`, err.message);
-                }
-            }
-
-        } catch (error) {
-            console.error('Error handling trade opened:', error);
-        }
-    }
-
-    // ✅ UPDATED: Channel notifications only for admin (7159524412)
-    async handleUserTradeClosed(userId, tradeResult) {
-        try {
-            const user = await this.db.getUser(userId);
-            if (!user) return;
-
-            const channels = await this.db.getActiveChannels();
-            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
-
-            const resultEmoji = tradeResult.isWin ? '✅' : '❌';
-            const resultText = tradeResult.isWin ? 'WIN' : 'LOSS';
-
-            const message = `
-${resultEmoji} ${resultText} 
-━━━━━━━━━━━━━━━
-📊 Asset: ${tradeResult.asset}
-
-            `;
-
-            console.log(`📤 Sending trade result for user ${userId}: ${tradeResult.isWin ? 'WIN' : 'LOSS'}`);
-
-            // 1. Send to channel ONLY if this is the admin (7159524412)
-            if (userId === adminId) {
-                for (const channel of channels) {
-                    try {
-                        await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
-                        console.log(`✅ Admin result sent to channel ${channel.channel_id}`);
-                    } catch (err) {
-                        console.error(`Failed to send admin result to channel:`, err.message);
-                    }
-                }
-            }
-
-            // 2. Send to user's DM (always)
-            try {
-                await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
-            } catch (err) {
-                console.error(`Failed to send to user ${userId}:`, err.message);
-            }
-
-            // 3. Send to admin DM for monitoring (always)
-            if (adminId && adminId !== userId) {
-                try {
-                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
-                } catch (err) {
-                    console.error(`Failed to send to admin:`, err.message);
-                }
-            }
-
-        } catch (error) {
-            console.error('Error handling trade closed:', error);
-        }
-    }
-
-    // Keep these for compatibility but not used
-    async sendToUser(userId, type, data) { }
-    async sendToAdmin(type, data) { }
-
+    // Handle revoke button clicks
     setupHandlers() {
         // Main Menu button
         this.bot.hears('🏠 Main Menu', async (ctx) => {
@@ -991,7 +890,102 @@ ${resultEmoji} ${resultText}
 
         this.bot.hears('🔴 Revoke User', async (ctx) => {
             if (!ctx.state.user?.is_admin) return;
-            await ctx.reply('🛠 *Revoke User Access*\n\nPlease use the command below with the User ID:\n`/revoke [user_id]`\n\n_Tip: Find IDs in the "List Users" menu._', { parse_mode: 'Markdown' });
+            await ctx.reply('🛠 *Revoke User Access*\n\nClick the button below to see the list of users:', {
+                parse_mode: 'Markdown',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('👥 Show Users to Revoke', 'show_revoke_list')]
+                ])
+            });
+        });
+
+        // Handle show revoke list button
+        this.bot.action('show_revoke_list', async (ctx) => {
+            if (!ctx.state.user?.is_admin) {
+                await ctx.answerCbQuery('❌ Admin only');
+                return;
+            }
+            
+            await ctx.deleteMessage();
+            
+            try {
+                const users = await this.db.getAllUsers();
+                const activeUsers = users.filter(u => !u.is_admin);
+                
+                if (activeUsers.length === 0) {
+                    await ctx.reply('👥 No users to revoke.');
+                    return;
+                }
+                
+                let message = '🔴 *Select user to revoke:*\n\n';
+                const buttons = [];
+                
+                for (const user of activeUsers) {
+                    message += `👤 *${user.email}*\n`;
+                    message += `   ID: \`${user._id}\`\n`;
+                    message += `   Status: ${user.connected ? '🟢 Online' : '🔴 Offline'}\n`;
+                    message += `   Trades: ${user.stats?.total_trades || 0}\n\n`;
+                    
+                    buttons.push([
+                        Markup.button.callback(
+                            `❌ Revoke ${user.email.split('@')[0]}`, 
+                            `revoke_${user._id}`
+                        )
+                    ]);
+                }
+                
+                await ctx.reply(message, {
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard(buttons)
+                });
+                
+            } catch (error) {
+                await ctx.reply('❌ Failed to get users: ' + error.message);
+            }
+        });
+
+        // Handle revoke button clicks
+        this.bot.action(/^revoke_/, async (ctx) => {
+            if (!ctx.state.user?.is_admin) {
+                await ctx.answerCbQuery('❌ Admin only');
+                return;
+            }
+            
+            const targetId = ctx.match[0].replace('revoke_', '');
+            
+            try {
+                // Get user info before deleting
+                const user = await this.db.getUser(targetId);
+                if (!user) {
+                    await ctx.answerCbQuery('❌ User not found');
+                    return;
+                }
+                
+                // Disconnect if connected
+                const client = this.userConnections.get(targetId);
+                if (client) {
+                    client.disconnect();
+                    this.userConnections.delete(targetId);
+                }
+                
+                // Delete from database
+                const deleted = await this.db.deleteUser(targetId);
+                
+                if (deleted) {
+                    await ctx.answerCbQuery('✅ User revoked');
+                    await ctx.editMessageText(
+                        `✅ *User revoked successfully*\n\n` +
+                        `👤 User: ${user.email}\n` +
+                        `🆔 ID: \`${targetId}\`\n\n` +
+                        `They will need a new access code to use the bot again.`,
+                        { parse_mode: 'Markdown' }
+                    );
+                } else {
+                    await ctx.answerCbQuery('❌ Failed to revoke');
+                }
+                
+            } catch (error) {
+                await ctx.answerCbQuery('❌ Error: ' + error.message);
+            }
         });
 
         this.bot.hears('📢 Add Channel', async (ctx) => {
@@ -1296,6 +1290,120 @@ ${resultEmoji} ${resultText}
             await ctx.editMessageText('❌ Reset cancelled.');
         });
     }
+
+    // ✅ UPDATED: Channel notifications only for admin (7159524412)
+    async handleUserTradeOpened(userId, tradeData) {
+        try {
+            const user = await this.db.getUser(userId);
+            const client = this.getUserClient(userId);
+            const symbol = this.getCurrencySymbol(client?.currency || user.currency || 'USD');
+
+            const channels = await this.db.getActiveChannels();
+            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
+
+            const message = `
+🟢 NEW TRADE SIGNAL
+━━━━━━━━━━━━━━━
+👤 User: ${userId}
+📊 Asset: ${tradeData.asset}
+📈 Direction: ${tradeData.direction === 'CALL' ? 'BUY' : 'SELL'}
+💰 Amount: ${symbol}${tradeData.amount}
+⏱️ Duration: ${tradeData.duration} min
+
+            `;
+
+            console.log(`📤 Sending trade opened notification for user ${userId}`);
+
+            // 1. Send to channel ONLY if this is the admin (7159524412)
+            if (userId === adminId) {
+                for (const channel of channels) {
+                    try {
+                        await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
+                        console.log(`✅ Admin trade sent to channel ${channel.channel_id}`);
+                    } catch (err) {
+                        console.error(`Failed to send admin trade to channel:`, err.message);
+                    }
+                }
+            }
+
+            // 2. Send to user's DM (always)
+            try {
+                await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
+            } catch (err) {
+                console.error(`Failed to send to user ${userId}:`, err.message);
+            }
+
+            // 3. Send to admin DM for monitoring (always)
+            if (adminId && adminId !== userId) {
+                try {
+                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+                } catch (err) {
+                    console.error(`Failed to send to admin:`, err.message);
+                }
+            }
+
+        } catch (error) {
+            console.error('Error handling trade opened:', error);
+        }
+    }
+
+    // ✅ UPDATED: Channel notifications only for admin (7159524412)
+    async handleUserTradeClosed(userId, tradeResult) {
+        try {
+            const user = await this.db.getUser(userId);
+            if (!user) return;
+
+            const channels = await this.db.getActiveChannels();
+            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
+
+            const resultEmoji = tradeResult.isWin ? '✅' : '❌';
+            const resultText = tradeResult.isWin ? 'WIN' : 'LOSS';
+
+            const message = `
+${resultEmoji} ${resultText} 
+━━━━━━━━━━━━━━━
+📊 Asset: ${tradeResult.asset}
+
+            `;
+
+            console.log(`📤 Sending trade result for user ${userId}: ${tradeResult.isWin ? 'WIN' : 'LOSS'}`);
+
+            // 1. Send to channel ONLY if this is the admin (7159524412)
+            if (userId === adminId) {
+                for (const channel of channels) {
+                    try {
+                        await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
+                        console.log(`✅ Admin result sent to channel ${channel.channel_id}`);
+                    } catch (err) {
+                        console.error(`Failed to send admin result to channel:`, err.message);
+                    }
+                }
+            }
+
+            // 2. Send to user's DM (always)
+            try {
+                await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
+            } catch (err) {
+                console.error(`Failed to send to user ${userId}:`, err.message);
+            }
+
+            // 3. Send to admin DM for monitoring (always)
+            if (adminId && adminId !== userId) {
+                try {
+                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+                } catch (err) {
+                    console.error(`Failed to send to admin:`, err.message);
+                }
+            }
+
+        } catch (error) {
+            console.error('Error handling trade closed:', error);
+        }
+    }
+
+    // Keep these for compatibility but not used
+    async sendToUser(userId, type, data) { }
+    async sendToAdmin(type, data) { }
 
     getCurrencySymbol(currency) {
         if (!currency) return '$';
