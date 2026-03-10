@@ -82,6 +82,7 @@ class AutoTrader {
             baseAmount: base,
             currentAmount: baseChanged ? base : (db.current_amount || base),
             initialBalance: db.initial_balance || 0,
+            currency: currency,
         };
 
         this.activeTrades.set(userId, state);
