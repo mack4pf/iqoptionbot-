@@ -11,24 +11,24 @@ class AutoTrader {
 
         // In-memory state per user
         this.activeTrades = new Map();
-        
-        // NEW: Track open positions per user
+
+        // Track open positions per user
         this.openPositions = new Map(); // userId -> tradeId
-        
-        // NEW: Track last trade close time per user (for cooldown)
+
+        // Track last trade close time per user (for cooldown)
         this.lastTradeCloseTime = new Map(); // userId -> timestamp
 
-        // Minimum trade amounts per currency
-        this.currencyMinimums = {
-            NGN: 1500,
-            USD: 1,
-            EUR: 1,
-            GBP: 1,
-            BRL: 5,
-            INR: 70,
-            MXN: 20,
-            AED: 5,
-            ZAR: 20,
+        // Minimum AND MAXIMUM trade amounts per currency
+        this.currencyLimits = {
+            NGN: { min: 1500, max: 500000 },  // Nigerian Naira
+            USD: { min: 1, max: 1000 },        // US Dollar
+            EUR: { min: 1, max: 1000 },        // Euro
+            GBP: { min: 1, max: 1000 },        // British Pound
+            BRL: { min: 5, max: 5000 },        // Brazilian Real
+            INR: { min: 70, max: 70000 },       // Indian Rupee
+            MXN: { min: 20, max: 20000 },       // Mexican Peso
+            AED: { min: 5, max: 5000 },         // UAE Dirham
+            ZAR: { min: 20, max: 20000 },       // South African Rand
         };
     }
 
@@ -36,14 +36,29 @@ class AutoTrader {
     // CURRENCY HELPERS
     // ─────────────────────────────────────────
 
-    getCurrencyMinimum(currency) {
-        return this.currencyMinimums[(currency || 'USD').toUpperCase()] || 1;
+    getCurrencyMin(currency) {
+        return this.currencyLimits[(currency || 'USD').toUpperCase()]?.min || 1;
+    }
+
+    getCurrencyMax(currency) {
+        return this.currencyLimits[(currency || 'USD').toUpperCase()]?.max || 1000;
+    }
+
+    validateAmount(amount, currency) {
+        const min = this.getCurrencyMin(currency);
+        const max = this.getCurrencyMax(currency);
+
+        if (amount < min) return min;
+        if (amount > max) return max;
+        return amount;
     }
 
     getBaseAmount(user, currency) {
-        const min = this.getCurrencyMinimum(currency);
+        const min = this.getCurrencyMin(currency);
         const userSet = user?.tradeAmount;
-        return (userSet && userSet >= min) ? userSet : min;
+
+        // Validate the amount against currency limits
+        return this.validateAmount(userSet || min, currency);
     }
 
     // ─────────────────────────────────────────
@@ -55,21 +70,16 @@ class AutoTrader {
             return this.activeTrades.get(userId);
         }
 
-        // Always use the user's current tradeAmount as the authoritative base.
-        // This prevents a stale DB base_amount from overriding a user's /setamount update.
         const base = this.getBaseAmount(user, currency);
         const db = user?.martingale || {};
 
-        // If the user changed their tradeAmount, the stored base_amount in DB will be wrong.
-        // We detect this by comparing: if user's current base differs from stored base,
-        // we reset step/losses and use the new base.
         const storedBase = db.base_amount || base;
         const baseChanged = storedBase !== base;
 
         const state = {
             step: baseChanged ? 0 : (db.current_step || 0),
             losses: baseChanged ? 0 : (db.loss_streak || 0),
-            baseAmount: base,                                         // Always use current tradeAmount
+            baseAmount: base,
             currentAmount: baseChanged ? base : (db.current_amount || base),
             initialBalance: db.initial_balance || 0,
         };
@@ -93,6 +103,14 @@ class AutoTrader {
         } else {
             state.step = Math.min(state.step + 1, this.martingaleMultipliers.length - 1);
             state.currentAmount = state.baseAmount * this.martingaleMultipliers[state.step];
+
+            // Ensure we don't exceed max amount
+            const max = this.getCurrencyMax(state.currency);
+            if (state.currentAmount > max) {
+                console.log(`⚠️ User ${userId}: Martingale would exceed max amount. Capping at ${max}`);
+                state.currentAmount = max;
+            }
+
             console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/8)`);
             this.activeTrades.set(userId, state);
         }
@@ -100,7 +118,12 @@ class AutoTrader {
 
     checkBalanceGrowth(userId, state, currentBalance) {
         if (state.initialBalance > 0 && currentBalance >= state.initialBalance * 1.10) {
-            const newBase = Math.round(state.baseAmount * 1.10);
+            let newBase = Math.round(state.baseAmount * 1.10);
+
+            // Ensure new base doesn't exceed max
+            const max = this.getCurrencyMax(state.currency);
+            if (newBase > max) newBase = max;
+
             console.log(`📈 User ${userId}: Balance grew 10%! Boosting base ${state.baseAmount} → ${newBase}`);
             state.baseAmount = newBase;
             state.initialBalance = currentBalance;
@@ -119,24 +142,24 @@ class AutoTrader {
 
     async executeTrade(userId, client, signal) {
         try {
-            // 🛑 NEW: Check if user has an open position
+            // Check if user has an open position
             if (this.openPositions.has(userId)) {
                 const openTradeId = this.openPositions.get(userId);
                 console.log(`⏸️ User ${userId} has OPEN position (Trade ID: ${openTradeId}). IGNORING signal.`);
-                return { 
-                    success: false, 
-                    error: 'User has open position - trade blocked' 
+                return {
+                    success: false,
+                    error: 'User has open position - trade blocked'
                 };
             }
 
-            // 🛑 NEW: Check 10 second cooldown after last trade close
+            // Check 10 second cooldown after last trade close
             if (this.lastTradeCloseTime.has(userId)) {
                 const timeSinceLastClose = Date.now() - this.lastTradeCloseTime.get(userId);
                 if (timeSinceLastClose < 10000) { // 10 seconds
                     console.log(`⏸️ User ${userId} traded ${timeSinceLastClose}ms ago. IGNORING signal (10s cooldown).`);
-                    return { 
-                        success: false, 
-                        error: `Cooldown active - wait ${10 - Math.floor(timeSinceLastClose/1000)}s` 
+                    return {
+                        success: false,
+                        error: `Cooldown active - wait ${10 - Math.floor(timeSinceLastClose / 1000)}s`
                     };
                 }
             }
@@ -144,13 +167,17 @@ class AutoTrader {
             const user = await this.db.getUser(userId);
             const martingaleEnabled = user?.martingale_enabled !== false;
 
+            // IMPORTANT: Get currency from client first, then fallback to user
             const currency = client?.currency || user?.currency || 'USD';
-            const min = this.getCurrencyMinimum(currency);
+            const min = this.getCurrencyMin(currency);
+            const max = this.getCurrencyMax(currency);
 
             let tradeAmount;
 
             if (martingaleEnabled) {
                 const state = this.getMartingaleState(userId, user, currency);
+                // Store currency in state for later use
+                state.currency = currency;
 
                 if (state.initialBalance === 0 && client.balance > 0) {
                     state.initialBalance = client.balance;
@@ -164,7 +191,8 @@ class AutoTrader {
                 tradeAmount = user?.tradeAmount || min;
             }
 
-            if (tradeAmount < min) tradeAmount = min;
+            // Validate amount against currency limits
+            tradeAmount = this.validateAmount(tradeAmount, currency);
 
             if (client.balance < tradeAmount) {
                 return {
@@ -187,7 +215,7 @@ class AutoTrader {
                 return { success: false, error: result.error };
             }
 
-            // ✅ NEW: Track open position
+            // Track open position
             this.openPositions.set(userId, result.tradeId);
             console.log(`🔒 User ${userId} now has OPEN position: ${result.tradeId}`);
 
@@ -241,8 +269,7 @@ class AutoTrader {
         setTimeout(() => {
             client.ws?.removeListener('message', messageHandler);
             console.log(`⏰ Trade ${tradeInfo.tradeId} timeout (waited ${durationMs / 60000} min)`);
-            
-            // ✅ NEW: Clean up open position on timeout (just in case)
+
             if (this.openPositions.has(userId) && this.openPositions.get(userId) === tradeInfo.tradeId) {
                 this.openPositions.delete(userId);
                 console.log(`🔓 User ${userId} open position cleared (timeout)`);
@@ -271,21 +298,21 @@ class AutoTrader {
             const currency = tradeInfo.currency || position.currency || 'USD';
             const currencySymbol = this.getCurrencySymbol(currency);
 
-            // ✅ NEW: Remove from open positions
+            // Remove from open positions
             if (this.openPositions.has(userId)) {
                 this.openPositions.delete(userId);
                 console.log(`🔓 User ${userId} open position cleared (trade closed)`);
             }
 
-            // ✅ NEW: Set last trade close time for cooldown
+            // Set last trade close time for cooldown
             this.lastTradeCloseTime.set(userId, Date.now());
             console.log(`⏱️ User ${userId} cooldown started - 10 seconds`);
 
-            // ── Martingale Update ──
+            // Martingale Update
             let state = this.activeTrades.get(userId);
             if (!state) {
                 const base = this.getBaseAmount(user, currency);
-                state = { step: 0, losses: 0, baseAmount: base, currentAmount: base, initialBalance: 0 };
+                state = { step: 0, losses: 0, baseAmount: base, currentAmount: base, initialBalance: 0, currency };
             }
 
             if (martingaleEnabled) {
@@ -297,7 +324,7 @@ class AutoTrader {
                 }
             }
 
-            // ── Update Stats in DB ──
+            // Update Stats in DB
             if (user) {
                 const stats = user.stats || { total_trades: 0, wins: 0, losses: 0, total_profit: 0 };
                 stats.total_trades++;
@@ -321,7 +348,7 @@ class AutoTrader {
                 });
             }
 
-            // ── Send Notification ──
+            // Send Notification
             if (user && this.telegramBot) {
                 const stepDisplay = martingaleEnabled
                     ? (isWin

@@ -510,7 +510,7 @@ class TelegramBot {
                     '/status — Connection & account info\n' +
                     '/logout — Disconnect your account\n\n' +
                     '━━━━━━━━━━━━━━━━━━━━━━━━━';
-                await ctx.reply(adminHelp, { 
+                await ctx.reply(adminHelp, {
                     parse_mode: 'Markdown',
                     disable_web_page_preview: false
                 });
@@ -690,38 +690,38 @@ class TelegramBot {
         // ✅ NEW: Admin: Revoke user - SHOWS LIST OF USERS WITH BUTTONS
         this.bot.command('revoke', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
-            
+
             try {
                 const users = await this.db.getAllUsers();
                 const activeUsers = users.filter(u => !u.is_admin);
-                
+
                 if (activeUsers.length === 0) {
                     return ctx.reply('👥 No users to revoke.');
                 }
-                
+
                 let message = '🔴 *Select user to revoke:*\n\n';
                 const buttons = [];
-                
+
                 // Create a button for each user
                 for (const user of activeUsers) {
                     message += `👤 *${user.email}*\n`;
                     message += `   ID: \`${user._id}\`\n`;
                     message += `   Status: ${user.connected ? '🟢 Online' : '🔴 Offline'}\n`;
                     message += `   Trades: ${user.stats?.total_trades || 0}\n\n`;
-                    
+
                     buttons.push([
                         Markup.button.callback(
-                            `❌ Revoke ${user.email.split('@')[0]}`, 
+                            `❌ Revoke ${user.email.split('@')[0]}`,
                             `revoke_${user._id}`
                         )
                     ]);
                 }
-                
+
                 await ctx.reply(message, {
                     parse_mode: 'Markdown',
                     ...Markup.inlineKeyboard(buttons)
                 });
-                
+
             } catch (error) {
                 ctx.reply('❌ Failed to get users: ' + error.message);
             }
@@ -904,40 +904,40 @@ class TelegramBot {
                 await ctx.answerCbQuery('❌ Admin only');
                 return;
             }
-            
+
             await ctx.deleteMessage();
-            
+
             try {
                 const users = await this.db.getAllUsers();
                 const activeUsers = users.filter(u => !u.is_admin);
-                
+
                 if (activeUsers.length === 0) {
                     await ctx.reply('👥 No users to revoke.');
                     return;
                 }
-                
+
                 let message = '🔴 *Select user to revoke:*\n\n';
                 const buttons = [];
-                
+
                 for (const user of activeUsers) {
                     message += `👤 *${user.email}*\n`;
                     message += `   ID: \`${user._id}\`\n`;
                     message += `   Status: ${user.connected ? '🟢 Online' : '🔴 Offline'}\n`;
                     message += `   Trades: ${user.stats?.total_trades || 0}\n\n`;
-                    
+
                     buttons.push([
                         Markup.button.callback(
-                            `❌ Revoke ${user.email.split('@')[0]}`, 
+                            `❌ Revoke ${user.email.split('@')[0]}`,
                             `revoke_${user._id}`
                         )
                     ]);
                 }
-                
+
                 await ctx.reply(message, {
                     parse_mode: 'Markdown',
                     ...Markup.inlineKeyboard(buttons)
                 });
-                
+
             } catch (error) {
                 await ctx.reply('❌ Failed to get users: ' + error.message);
             }
@@ -949,9 +949,9 @@ class TelegramBot {
                 await ctx.answerCbQuery('❌ Admin only');
                 return;
             }
-            
+
             const targetId = ctx.match[0].replace('revoke_', '');
-            
+
             try {
                 // Get user info before deleting
                 const user = await this.db.getUser(targetId);
@@ -959,17 +959,17 @@ class TelegramBot {
                     await ctx.answerCbQuery('❌ User not found');
                     return;
                 }
-                
+
                 // Disconnect if connected
                 const client = this.userConnections.get(targetId);
                 if (client) {
                     client.disconnect();
                     this.userConnections.delete(targetId);
                 }
-                
+
                 // Delete from database
                 const deleted = await this.db.deleteUser(targetId);
-                
+
                 if (deleted) {
                     await ctx.answerCbQuery('✅ User revoked');
                     await ctx.editMessageText(
@@ -982,7 +982,7 @@ class TelegramBot {
                 } else {
                     await ctx.answerCbQuery('❌ Failed to revoke');
                 }
-                
+
             } catch (error) {
                 await ctx.answerCbQuery('❌ Error: ' + error.message);
             }
