@@ -189,18 +189,6 @@ class TradingBot {
 
         console.log(`👥 Found ${clients.length} connected user(s)`);
 
-        // --- ADDED: Send a single signal announcement ---
-        try {
-            const signalMsg = this.autoTrader.formatSignalMessage(signal, clients.length);
-            const adminId = process.env.ADMIN_CHAT_ID;
-            if (adminId) {
-                await this.telegramBot.bot.telegram.sendMessage(adminId, signalMsg, { parse_mode: 'Markdown' });
-            }
-        } catch (err) {
-            console.error('Error sending signal announcement:', err.message);
-        }
-        // ------------------------------------------------
-
         for (const { userId, client } of clients) {
             // Per-user lock
             if (this.userLocks.has(userId)) {

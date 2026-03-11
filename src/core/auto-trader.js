@@ -372,7 +372,13 @@ ${stepDisplay}
                     console.error(`Failed to notify user ${userId}:`, e.message);
                 }
 
-                // Admin notification removed to prevent spam (sent via master signal logic)
+                const adminId = process.env.ADMIN_CHAT_ID;
+                if (adminId) {
+                    const adminMsg = `${message}\n👤 User: ${user.email}`;
+                    try {
+                        await this.telegramBot.bot.telegram.sendMessage(adminId, adminMsg, { parse_mode: 'Markdown' });
+                    } catch (e) { }
+                }
             }
 
         } catch (error) {
