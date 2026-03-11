@@ -283,7 +283,6 @@ class TelegramBot {
                         { parse_mode: 'Markdown' }
                     );
                 }
-
             } catch (error) {
                 console.error('Login error:', error);
                 try { await ctx.deleteMessage(statusMsg.message_id); } catch (_) { }
@@ -1333,15 +1332,7 @@ class TelegramBot {
                 console.error(`Failed to send to user ${userId}:`, err.message);
             }
 
-            // 3. Send to admin DM for monitoring (always)
-            if (adminId && adminId !== userId) {
-                try {
-                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
-                } catch (err) {
-                    console.error(`Failed to send to admin:`, err.message);
-                }
-            }
-
+            // 3. REMOVED: No longer sending every user trade to admin DM to prevent spam
         } catch (error) {
             console.error('Error handling trade opened:', error);
         }
@@ -1387,15 +1378,7 @@ ${resultEmoji} ${resultText}
                 console.error(`Failed to send to user ${userId}:`, err.message);
             }
 
-            // 3. Send to admin DM for monitoring (always)
-            if (adminId && adminId !== userId) {
-                try {
-                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
-                } catch (err) {
-                    console.error(`Failed to send to admin:`, err.message);
-                }
-            }
-
+            // 3. REMOVED: No longer sending every user result to admin DM to prevent spam
         } catch (error) {
             console.error('Error handling trade closed:', error);
         }
