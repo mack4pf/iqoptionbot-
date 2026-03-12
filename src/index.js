@@ -4,7 +4,6 @@ const AutoTrader = require('./core/auto-trader');
 const apiServer = require('./api/server');
 require('dotenv').config();
 
-this.signalUserTrades = new Map();
 class TradingBot {
     constructor() {
         this.db = null;
@@ -15,6 +14,8 @@ class TradingBot {
         this.recentSignals = new Map();
         // Locks to prevent multiple executions for same user
         this.userLocks = new Set();
+        // Track processed users per signal
+        this.signalUserTrades = new Map();
     }
 
     async initialize() {
@@ -44,7 +45,7 @@ class TradingBot {
         // START API SERVER
         console.log('📡 Starting Signal Receiver API...');
         apiServer.setTradingBot(this);
-        const apiPort = process.env.API_PORT || 3000;
+        const apiPort = process.env.API_PORT;
         apiServer.startServer(apiPort);
         console.log(`✅ Signal Receiver API listening on port ${apiPort}\n`);
 
@@ -180,14 +181,16 @@ class TradingBot {
         }
 
         const clients = this.telegramBot.getAllConnectedClients();
-        console.log(`👥 getAllConnectedClients returned: ${JSON.stringify(clients.map(c => c.userId))}`);
+        console.log(`👥 Found ${clients.length} connected user(s)`);
 
         if (clients.length === 0) {
             console.log('⚠️ No connected users to execute signal');
             return;
         }
 
-        console.log(`👥 Found ${clients.length} connected user(s)`);
+        // 🚀 FIX: Execute all trades in parallel (no delays)
+        const tradePromises = [];
+        const processedUsers = [];
 
         for (const { userId, client } of clients) {
             // Per-user lock
@@ -195,13 +198,11 @@ class TradingBot {
                 console.log(`⏸️ User ${userId} is already processing a trade, skipping.`);
                 continue;
             }
-            this.userLocks.add(userId);
 
             // Track if this user already traded for this signal
             const tradeKey = `${signal.signalId}_${userId}`;
             if (this.signalUserTrades?.has(tradeKey)) {
                 console.log(`⏸️ User ${userId} already traded for signal ${signal.signalId}, skipping.`);
-                this.userLocks.delete(userId);
                 continue;
             }
             if (!this.signalUserTrades) this.signalUserTrades = new Map();
@@ -212,7 +213,11 @@ class TradingBot {
                 if (this.signalUserTrades) this.signalUserTrades.delete(tradeKey);
             }, 300000);
 
-            (async () => {
+            this.userLocks.add(userId);
+            processedUsers.push(userId);
+
+            // Create promise for this trade
+            const tradePromise = (async () => {
                 try {
                     const currency = client?.currency || 'NGN';
                     console.log(`🔍 User ${userId} — Currency: ${currency} | Account: ${client?.accountType}`);
@@ -242,9 +247,15 @@ class TradingBot {
                 }
             })();
 
-            await new Promise(resolve => setTimeout(resolve, 800));
+            tradePromises.push(tradePromise);
         }
+
+        // Wait for ALL trades to complete in parallel
+        await Promise.all(tradePromises);
+
+        console.log(`✅ Signal execution complete for ${processedUsers.length} users (all executed in parallel)`);
     }
+
     async shutdown() {
         console.log('\n🛑 Shutting down...');
         if (this.adminClient) this.adminClient.disconnect();
