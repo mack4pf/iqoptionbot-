@@ -52,6 +52,13 @@ class MongoDB {
                 if (err.codeName === 'IndexKeySpecsConflict') console.log('ℹ️ Access expires index exists');
             }
 
+            // 🔥 NEW INDEX FOR SSID (optional but good for performance)
+            try {
+                await users.createIndex({ "ssid": 1 }, { name: "ssid_index", sparse: true });
+            } catch (err) {
+                if (err.codeName === 'IndexKeySpecsConflict') console.log('ℹ️ SSID index exists');
+            }
+
             // Access codes collection indexes
             try {
                 await codes.createIndex({ "code": 1 }, { unique: true, name: "code_unique_index" });
@@ -124,7 +131,10 @@ class MongoDB {
                     created_at: new Date(),
                     last_active: new Date(),
                     is_admin: true,
-                    access_expires_at: new Date('2099-12-31')
+                    access_expires_at: new Date('2099-12-31'),
+                    // 🔥 ADD SSID FIELDS FOR ADMIN
+                    ssid: null,
+                    ssid_updated_at: null
                 });
                 console.log('✅ Admin user created');
             } else {
@@ -264,7 +274,10 @@ class MongoDB {
                 current_step: 0,
                 current_amount: 1,
                 loss_streak: 0
-            }
+            },
+            // 🔥 NEW FIELDS FOR SSID STORAGE
+            ssid: null,
+            ssid_updated_at: null
         };
 
         await users.insertOne(user);
@@ -283,6 +296,68 @@ class MongoDB {
             { _id: chatId.toString() },
             { $set: updates }
         );
+    }
+
+    // 🔥 NEW: Store SSID after successful login
+    async storeUserSsid(chatId, ssid) {
+        const users = this.db.collection('users');
+        return await users.updateOne(
+            { _id: chatId.toString() },
+            {
+                $set: {
+                    ssid: ssid,
+                    ssid_updated_at: new Date(),
+                    connected: true
+                }
+            }
+        );
+    }
+
+    // 🔥 NEW: Get stored SSID
+    async getUserSsid(chatId) {
+        const users = this.db.collection('users');
+        const user = await users.findOne(
+            { _id: chatId.toString() },
+            { projection: { ssid: 1, ssid_updated_at: 1 } }
+        );
+        return user ? user.ssid : null;
+    }
+
+    // 🔥 NEW: Clear SSID on logout
+    async clearUserSsid(chatId) {
+        const users = this.db.collection('users');
+        return await users.updateOne(
+            { _id: chatId.toString() },
+            {
+                $set: {
+                    ssid: null,
+                    connected: false
+                }
+            }
+        );
+    }
+
+    // 🔥 NEW: Check if user has valid stored session
+    async hasValidSession(chatId) {
+        const users = this.db.collection('users');
+        const user = await users.findOne(
+            { _id: chatId.toString() },
+            { projection: { ssid: 1, ssid_updated_at: 1 } }
+        );
+
+        if (!user || !user.ssid) return false;
+
+        // Optional: Check if session is not too old (e.g., 30 days)
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        if (user.ssid_updated_at && user.ssid_updated_at < thirtyDaysAgo) {
+            // Session is too old, clear it
+            await this.clearUserSsid(chatId);
+            return false;
+        }
+
+        return true;
     }
 
     async getAllUsers() {

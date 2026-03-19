@@ -1,22 +1,24 @@
 const WebSocket = require('ws');
 const axios = require('axios');
+const tunnel = require('tunnel');
 
 class IQOptionClient {
-    constructor(email, password, chatId = null) {
+    constructor(email, password, chatId = null, db = null) {
         this.email = email;
         this.password = password;
         this.chatId = chatId;
+        this.db = db;
         this.ws = null;
         this.ssid = null;
         this.connected = false;
 
-        // Account info - REAL by default
+        // Account info
         this.accountType = 'REAL';
         this.balance = 0;
         this.currency = 'USD';
         this.balanceId = null;
 
-        // Store both balances with their currencies
+        // Store both balances
         this.realBalance = 0;
         this.realCurrency = 'USD';
         this.realBalanceId = null;
@@ -25,28 +27,20 @@ class IQOptionClient {
         this.practiceCurrency = 'USD';
         this.practiceBalanceId = null;
 
-        // IMPORTANT: Store the original currency for each account type
-        this.realOriginalCurrency = 'NGN';
-        this.practiceOriginalCurrency = 'USD';
-
         // Callbacks
         this.onTradeOpened = null;
         this.onTradeClosed = null;
         this.onBalanceChanged = null;
 
-        // Asset mapping - CORRECTED
+        // Asset mapping
         this.assetMap = {
-            // REAL EURUSD (from your logs: 1861)
             1861: 'EURUSD',
-
-
             2: 'GBPUSD',
             3: 'USDJPY',
             4: 'AUDUSD',
             5: 'USDCAD',
             6: 'USDCHF',
             7: 'NZDUSD',
-
             76: 'EURUSD-OTC',
             77: 'GBPUSD-OTC',
             78: 'AUDUSD-OTC',
@@ -54,172 +48,115 @@ class IQOptionClient {
             80: 'USDCHF-OTC',
             81: 'NZDUSD-OTC',
             82: 'USDJPY-OTC',
-
-            // Your custom pairs
             2301: 'PENUSD-OTC',
             1961: 'GOLD',
         };
     }
 
-    async login() {
+    // Try to restore session from stored SSID
+    async restoreSession() {
+        if (!this.db || !this.chatId) return false;
+
         try {
-            console.log(`🔐 Logging in ${this.chatId ? 'user ' + this.chatId : 'admin'}...`);
-            const response = await axios.post('https://auth.iqoption.com/api/v1.0/login', {
-                email: this.email,
-                password: this.password
-            });
-            this.ssid = response.data.data.ssid;
-            console.log(`✅ Login successful for ${this.email}`);
+            console.log(`🔄 Attempting to restore session for user ${this.chatId}`);
+            const ssid = await this.db.getUserSsid(this.chatId);
+            if (!ssid) return false;
+
+            this.ssid = ssid;
+            console.log(`✅ Session restored for user ${this.chatId}`);
             return true;
         } catch (error) {
-            console.error(`❌ Login failed:`, error.response?.data?.message || error.message);
+            console.log(`⚠️ Session restore failed:`, error.message);
             return false;
         }
     }
 
-    refreshProfile() {
-        this.send({ name: 'sendMessage', request_id: Date.now(), msg: { name: 'get-profile', version: '1.0' } });
-    }
+    // Get proxy config using tunnel
+    getProxyConfig() {
+        if (!process.env.IPROYAL_HOST) return null;
 
-    getAssetName(activeId) {
-        return this.assetMap[activeId] || `Unknown-ID:${activeId}`;
-    }
-
-    // ==================== NEW: GET CANDLES METHOD ====================
-    async getCandles(assetId, interval, count, endTime) {
-        return new Promise((resolve, reject) => {
-            const requestId = Date.now();
-
-            this.send({
-                name: 'sendMessage',
-                request_id: requestId,
-                msg: {
-                    name: 'get-candles',
-                    version: '2.0',
-                    body: {
-                        active_id: assetId,
-                        size: interval,  // 30 for 30-second candles
-                        from: endTime - (count * interval), // Calculate start time
-                        to: endTime,
-                        count: count
-                    }
-                }
-            });
-
-            const messageListener = (data) => {
-                try {
-                    const msg = JSON.parse(data);
-
-                    if (msg.name === 'candles' && msg.request_id === requestId) {
-                        this.ws?.removeListener('message', messageListener);
-                        resolve(msg.msg || []);
-                    }
-                } catch (e) { }
-            };
-
-            this.ws?.on('message', messageListener);
-
-            setTimeout(() => {
-                this.ws?.removeListener('message', messageListener);
-                reject(new Error('Timeout fetching candles'));
-            }, 5000);
+        return tunnel.httpsOverHttp({
+            proxy: {
+                host: process.env.IPROYAL_HOST,
+                port: parseInt(process.env.IPROYAL_PORT),
+                proxyAuth: `${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}`
+            }
         });
     }
-    // ==================== END GET CANDLES ====================
 
-    async placeTrade(params) {
-        return new Promise((resolve) => {
-            const { asset, direction, amount, duration } = params;
-            const requestId = Date.now();
+    async login(useProxy = true) {
+        // Try to restore session first
+        if (await this.restoreSession()) {
+            this.connect();
+            return true;
+        }
 
-            // Get asset ID from assetMap - prioritize 1861 for EURUSD
-            let activeId = 1861; // Default to REAL EURUSD
-            for (const [id, name] of Object.entries(this.assetMap)) {
-                if (name === asset) {
-                    activeId = parseInt(id);
-                    break;
+        console.log(`🔐 User ${this.chatId} logging in...`);
+
+        try {
+            let config = {
+                method: 'post',
+                url: 'https://auth.iqoption.com/api/v1.0/login',
+                data: {
+                    email: this.email,
+                    password: this.password
+                },
+                timeout: 30000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                }
+            };
+
+            // Add proxy if enabled
+            if (useProxy) {
+                const httpsAgent = this.getProxyConfig();
+                if (httpsAgent) {
+                    config.httpsAgent = httpsAgent;
+                    config.proxy = false;
+                    console.log(`🔄 User ${this.chatId} using proxy for login`);
                 }
             }
 
-            // IMPORTANT: Check if we have balance ID
-            if (!this.balanceId) {
-                console.log('❌ No balance ID yet, refreshing profile...');
-                this.refreshProfile();
-                // Wait a bit and try again
-                setTimeout(() => {
-                    if (this.balanceId) {
-                        this.placeTrade(params).then(resolve);
-                    } else {
-                        resolve({ success: false, error: 'Balance not ready' });
-                    }
-                }, 2000);
-                return;
+            const response = await axios(config);
+
+            if (response.data && response.data.data && response.data.data.ssid) {
+                this.ssid = response.data.data.ssid;
+
+                // Store SSID in database
+                if (this.db && this.chatId) {
+                    await this.db.storeUserSsid(this.chatId, this.ssid);
+                    console.log(`💾 SSID stored for user ${this.chatId}`);
+                }
+
+                console.log(`✅ User ${this.chatId} login successful`);
+
+                // Connect WebSocket
+                this.connect();
+                return true;
             }
 
-            console.log(`🔍 Trading on asset ID: ${activeId} (${asset})`);
-            console.log(`💰 Using ${this.accountType} account - Currency: ${this.currency}`);
+            return false;
 
-            // Calculate expiration timestamp
-            const now = Math.floor(Date.now() / 1000);
-            const expiration = now + (duration * 60);
+        } catch (error) {
+            console.error(`❌ User ${this.chatId} login failed:`, error.message);
+            return false;
+        }
+    }
 
-            console.log(`📤 Placing Blitz trade:`, {
-                activeId,
-                direction,
-                amount,
-                currency: this.currency,
-                duration: duration + 'min',
-                balanceId: this.balanceId
-            });
+    async logout() {
+        if (this.db && this.chatId) {
+            await this.db.clearUserSsid(this.chatId);
+            console.log(`🗑️ SSID cleared for user ${this.chatId}`);
+        }
 
-            const durationSeconds = duration * 60;
-            const tradeMessage = {
-                name: "binary-options.open-option",
-                version: "1.0",
-                body: {
-                    active_id: activeId,
-                    option_type_id: 12,
-                    option_type: "blitz",
-                    direction: direction.toLowerCase(),
-                    expired: expiration,
-                    price: amount,
-                    user_balance_id: this.balanceId,
-                    expiration_size: durationSeconds
-                }
-            };
+        if (this.ws) {
+            this.ws.close();
+            this.connected = false;
+        }
 
-            console.log('📤 Sending trade request...');
-            this.send({ name: 'sendMessage', request_id: requestId, msg: tradeMessage });
-
-            const messageListener = (data) => {
-                try {
-                    const msg = JSON.parse(data);
-
-                    if (msg.name === 'option-opened' && msg.msg?.option_id) {
-                        console.log('✅ Trade successful!', msg.msg);
-                        this.ws?.removeListener('message', messageListener);
-                        resolve({
-                            success: true,
-                            tradeId: msg.msg.option_id,
-                            data: msg.msg
-                        });
-                    }
-
-                    if (msg.name === 'option' && msg.msg?.message) {
-                        console.log('❌ Trade failed:', msg.msg);
-                        this.ws?.removeListener('message', messageListener);
-                        resolve({ success: false, error: msg.msg.message });
-                    }
-                } catch (e) { }
-            };
-
-            this.ws?.on('message', messageListener);
-
-            setTimeout(() => {
-                this.ws?.removeListener('message', messageListener);
-                resolve({ success: false, error: 'Timeout' });
-            }, 10000);
-        });
+        console.log(`👋 User ${this.chatId} logged out`);
     }
 
     connect() {
@@ -228,25 +165,26 @@ class IQOptionClient {
             return;
         }
 
-        console.log(`🔄 Connecting WebSocket for ${this.email}...`);
+        console.log(`🔄 Connecting WebSocket for user ${this.chatId}...`);
 
         this.ws = new WebSocket(`wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`);
 
         this.ws.on('open', () => {
-            console.log(`✅ WebSocket connected for ${this.email}`);
+            console.log(`✅ WebSocket connected for user ${this.chatId}`);
             this.connected = true;
             this.send({ name: 'ssid', msg: this.ssid });
 
-            // Heartbeat every 30 seconds
+            // Heartbeat
             setInterval(() => {
-                if (this.ws?.readyState === WebSocket.OPEN)
+                if (this.ws?.readyState === WebSocket.OPEN) {
                     this.send({ name: 'heartbeat', msg: Date.now() });
+                }
             }, 30000);
 
-            // Request profile immediately
+            // Request profile
             this.refreshProfile();
 
-            // Also request balances as backup
+            // Get balances
             setTimeout(() => {
                 this.send({
                     name: 'sendMessage',
@@ -265,50 +203,50 @@ class IQOptionClient {
                         params: {}
                     }
                 });
-                console.log(`👂 Listening for trades for ${this.email}`);
+                console.log(`👂 Listening for trades for user ${this.chatId}`);
             }, 2000);
         });
 
         this.ws.on('message', (data) => {
             try {
                 const message = JSON.parse(data);
-
-                switch (message.name) {
-                    case 'profile':
-                        this.handleProfile(message);
-                        break;
-
-                    case 'balances':
-                        this.handleBalances(message);
-                        break;
-
-                    case 'position':
-                    case 'position-changed':
-                        this.handlePositionUpdate(message.msg);
-                        break;
-
-                    case 'balance-changed':
-                        this.refreshProfile();
-                        break;
-                }
+                this.handleMessage(message);
             } catch (err) {
                 // Ignore parse errors
             }
         });
 
         this.ws.on('error', (error) => {
-            console.error(`❌ WebSocket error for ${this.email}:`, error.message);
+            console.error(`❌ WebSocket error for user ${this.chatId}:`, error.message);
             this.connected = false;
         });
 
         this.ws.on('close', () => {
-            console.log(`🔌 WebSocket closed for ${this.email}`);
+            console.log(`🔌 WebSocket closed for user ${this.chatId}`);
             this.connected = false;
             setTimeout(() => {
-                console.log(`🔄 Reconnecting ${this.email}...`);
+                console.log(`🔄 Reconnecting user ${this.chatId}...`);
                 this.connect();
             }, 5000);
         });
+    }
+
+    handleMessage(message) {
+        switch (message.name) {
+            case 'profile':
+                this.handleProfile(message);
+                break;
+            case 'balances':
+                this.handleBalances(message);
+                break;
+            case 'position':
+            case 'position-changed':
+                this.handlePositionUpdate(message.msg);
+                break;
+            case 'balance-changed':
+                this.refreshProfile();
+                break;
+        }
     }
 
     handleProfile(message) {
@@ -320,14 +258,12 @@ class IQOptionClient {
             this.realBalance = real.amount;
             this.realCurrency = real.currency;
             this.realBalanceId = real.id;
-            this.realOriginalCurrency = real.currency;
         }
 
         if (practice) {
             this.practiceBalance = practice.amount;
             this.practiceCurrency = practice.currency;
             this.practiceBalanceId = practice.id;
-            this.practiceOriginalCurrency = practice.currency;
         }
 
         if (this.accountType === 'REAL' && real) {
@@ -340,9 +276,8 @@ class IQOptionClient {
             this.balanceId = practice.id;
         }
 
-        console.log(`💰 REAL Balance: ${this.realCurrency} ${this.realBalance}`);
-        console.log(`💰 PRACTICE Balance: ${this.practiceCurrency} ${this.practiceBalance}`);
-        console.log(`🎯 Active for trading: ${this.accountType} (${this.currency}) - ID: ${this.balanceId}`);
+        console.log(`💰 User ${this.chatId} - REAL Balance: ${this.realCurrency} ${this.realBalance}`);
+        console.log(`💰 User ${this.chatId} - PRACTICE Balance: ${this.practiceCurrency} ${this.practiceBalance}`);
 
         if (this.onBalanceChanged) {
             this.onBalanceChanged({
@@ -385,8 +320,6 @@ class IQOptionClient {
         const activeId = position.active_id || position.instrument_id;
         const asset = this.getAssetName(activeId);
 
-        console.log(`🔍 RAW ASSET ID: ${activeId} -> maps to: ${asset}`);
-
         let direction = 'Unknown';
         let displayDirection = 'UNKNOWN';
         let directionEmoji = '⚪';
@@ -405,23 +338,17 @@ class IQOptionClient {
             directionEmoji = '🔴';
         }
 
-        let duration = '?';
-        if (position.raw_event?.expiration_time && position.raw_event?.open_time) {
-            const durationSec = position.raw_event.expiration_time - position.raw_event.open_time;
-            duration = Math.round(durationSec / 60);
-        }
-
         if (position.status === 'open') {
             const amount = position.invest || position.raw_event?.amount || 0;
             const tradeData = {
                 asset,
                 direction: displayDirection,
                 amount,
-                duration,
+                duration: position.duration || '?',
                 tradeId: position.id || position.external_id,
                 openTime: position.open_time || position.raw_event?.open_time_millisecond
             };
-            console.log(`\n${directionEmoji} TRADE OPENED: ${asset} ${this.currency}${amount} (${displayDirection})`);
+            console.log(`\n${directionEmoji} User ${this.chatId} TRADE OPENED: ${asset} ${this.currency}${amount}`);
             if (this.onTradeOpened) this.onTradeOpened(tradeData);
         }
 
@@ -443,11 +370,80 @@ class IQOptionClient {
                 isWin,
                 tradeId: position.id || position.external_id
             };
-            console.log(`\n${isWin ? '✅' : '❌'} TRADE CLOSED: ${asset} Profit: ${this.currency}${profit.toFixed(2)}`);
+            console.log(`\n${isWin ? '✅' : '❌'} User ${this.chatId} TRADE CLOSED: ${asset} Profit: ${this.currency}${profit.toFixed(2)}`);
             if (this.onTradeClosed) this.onTradeClosed(tradeResult);
 
             this.refreshProfile();
         }
+    }
+
+    refreshProfile() {
+        this.send({ name: 'sendMessage', request_id: Date.now(), msg: { name: 'get-profile', version: '1.0' } });
+    }
+
+    getAssetName(activeId) {
+        return this.assetMap[activeId] || `Unknown-ID:${activeId}`;
+    }
+
+    async placeTrade(params) {
+        return new Promise((resolve) => {
+            const { asset, direction, amount, duration } = params;
+            const requestId = Date.now();
+
+            let activeId = 1861;
+            for (const [id, name] of Object.entries(this.assetMap)) {
+                if (name === asset) {
+                    activeId = parseInt(id);
+                    break;
+                }
+            }
+
+            if (!this.balanceId) {
+                console.log('❌ No balance ID yet');
+                return resolve({ success: false, error: 'Balance not ready' });
+            }
+
+            const now = Math.floor(Date.now() / 1000);
+            const expiration = now + (duration * 60);
+            const durationSeconds = duration * 60;
+
+            const tradeMessage = {
+                name: "binary-options.open-option",
+                version: "1.0",
+                body: {
+                    active_id: activeId,
+                    option_type_id: 12,
+                    option_type: "blitz",
+                    direction: direction.toLowerCase(),
+                    expired: expiration,
+                    price: amount,
+                    user_balance_id: this.balanceId,
+                    expiration_size: durationSeconds
+                }
+            };
+
+            this.send({ name: 'sendMessage', request_id: requestId, msg: tradeMessage });
+
+            const messageListener = (data) => {
+                try {
+                    const msg = JSON.parse(data);
+                    if (msg.name === 'option-opened' && msg.msg?.option_id) {
+                        this.ws?.removeListener('message', messageListener);
+                        resolve({ success: true, tradeId: msg.msg.option_id });
+                    }
+                    if (msg.name === 'option' && msg.msg?.message) {
+                        this.ws?.removeListener('message', messageListener);
+                        resolve({ success: false, error: msg.msg.message });
+                    }
+                } catch (e) { }
+            };
+
+            this.ws?.on('message', messageListener);
+            setTimeout(() => {
+                this.ws?.removeListener('message', messageListener);
+                resolve({ success: false, error: 'Timeout' });
+            }, 10000);
+        });
     }
 
     send(data) {

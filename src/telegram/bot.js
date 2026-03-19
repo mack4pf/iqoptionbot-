@@ -1,14 +1,38 @@
 const { Telegraf, Markup, session } = require('telegraf');
 const MongoDB = require('../database/mongodb');
 const IQOptionClient = require('../client');
+const https = require('https');
+const { default: PQueue } = require('p-queue');
 
 class TelegramBot {
     constructor(token, db, tradingBot) {
-        this.bot = new Telegraf(token);
+        // Create optimized HTTPS agent for connection pooling
+        const agent = new https.Agent({
+            keepAlive: true,
+            maxSockets: 25,           // Max simultaneous connections
+            maxFreeSockets: 10,        // Keep 10 connections ready
+            timeout: 60000,             // Active request timeout (60s)
+            freeSocketTimeout: 30000    // Idle socket timeout (30s)
+        });
+
+        // Initialize Telegraf with custom agent and increased timeout
+        this.bot = new Telegraf(token, {
+            telegram: { agent },
+            handlerTimeout: 300000 // 5 minutes timeout
+        });
+
         this.bot.use(session());
         this.db = db;
         this.tradingBot = tradingBot;
         this.userConnections = new Map();
+
+        // Add connection queue to prevent overload
+        this.loginQueue = new PQueue({ concurrency: 2 }); // Only 2 logins at a time
+        this.pendingCommands = new Map(); // Track pending commands
+
+        // Clear any pending commands on startup
+        this.clearPendingCommands();
+
         this.setupMiddleware();
         this.setupMenus();
         this.setupCommands();
@@ -19,6 +43,13 @@ class TelegramBot {
             console.error(`❌ Telegraf error for ${ctx.updateType}:`, err);
             if (err.stack) console.error(err.stack);
         });
+    }
+
+    // Clear pending commands on restart
+    clearPendingCommands() {
+        console.log('🧹 Clearing any pending commands from previous session...');
+        this.pendingCommands.clear();
+        // Telegraf's session store is cleared automatically on restart
     }
 
     setupMiddleware() {
@@ -171,7 +202,7 @@ class TelegramBot {
             }
         });
 
-        // LOGIN COMMAND
+        // LOGIN COMMAND - WITH QUEUE SYSTEM
         this.bot.command('login', async (ctx) => {
             const args = ctx.message.text.split(' ');
             if (args.length < 3) {
@@ -192,103 +223,106 @@ class TelegramBot {
                 return ctx.reply('❌ Please `/start` with an access code first.');
             }
 
-            const statusMsg = await ctx.reply('🔄 Connecting to IQ Option...');
+            // Add to queue to prevent overload
+            await this.loginQueue.add(async () => {
+                const statusMsg = await ctx.reply('🔄 Connecting to IQ Option... (please wait, you are in queue)');
 
-            try {
-                const iqClient = new IQOptionClient(email, password, ctx.from.id);
+                try {
+                    const iqClient = new IQOptionClient(email, password, ctx.from.id, this.db);
 
-                const loggedIn = await iqClient.login();
-                if (!loggedIn) {
-                    await ctx.deleteMessage(statusMsg.message_id).catch(() => { });
-                    return ctx.reply('❌ Login failed. Check your email and password.');
-                }
-
-                if (!user && pendingCode) {
-                    try {
-                        await this.db.registerUserWithCode(ctx.from.id, email, password, pendingCode);
-                        user = await this.db.getUser(ctx.from.id);
-                        ctx.session.pendingCode = null;
-                    } catch (regError) {
+                    const loggedIn = await iqClient.login();
+                    if (!loggedIn) {
                         await ctx.deleteMessage(statusMsg.message_id).catch(() => { });
-                        return ctx.reply('❌ Registration failed: ' + regError.message);
+                        return ctx.reply('❌ Login failed. Check your email and password.');
                     }
-                }
 
-                iqClient.connect();
-
-                iqClient.onTradeOpened = (tradeData) => {
-                    this.handleUserTradeOpened(ctx.from.id, tradeData);
-                };
-
-                iqClient.onTradeClosed = (tradeResult) => {
-                    this.handleUserTradeClosed(ctx.from.id, tradeResult);
-                };
-
-                iqClient.onBalanceChanged = ({ amount, currency }) => {
-                    this.db.updateUser(ctx.from.id, { balance: amount, currency, connected: true });
-                };
-
-                this.userConnections.set(ctx.from.id, iqClient);
-
-                await this.db.updateUser(ctx.from.id, {
-                    connected: true,
-                    last_active: new Date()
-                });
-
-                await ctx.deleteMessage(statusMsg.message_id);
-
-                await ctx.reply(
-                    '🎉 *Successfully Connected to IQ Option!*\n' +
-                    '━━━━━━━━━━━━━━━\n\n' +
-                    '📺 [COMPLETE VIDEO GUIDE](https://youtu.be/tePDDjJnMuM)\n\n' +
-                    '*What happens now?*\n' +
-                    '• Signals execute trades automatically on your account\n' +
-                    '• You get notified on every trade open & close\n' +
-                    '• Martingale doubles bet on loss, resets on win\n\n' +
-                    '*⏩ NEXT STEPS:*\n\n' +
-                    '*1️⃣ Set your trade amount*\n' +
-                    '`/setamount 1500` — minimum ₦1,500 (NGN) or $1 (USD)\n\n' +
-                    '*2️⃣ Choose your account type*\n' +
-                    'Practice mode is default (safe demo money)\n' +
-                    'Tap *💵 Real Mode* when ready to use real money\n\n' +
-                    '*3️⃣ Check martingale settings*\n' +
-                    'Tap *🤖 Martingale* to see your 6-step sequence\n\n' +
-                    '*4️⃣ Wait for signals — trades run automatically!*\n\n' +
-                    '━━━━━━━━━━━━━━━\n' +
-                    '_Type /help anytime to see all commands._',
-                    {
-                        parse_mode: 'Markdown',
-                        disable_web_page_preview: false,
-                        ...this.userMainMenu
+                    if (!user && pendingCode) {
+                        try {
+                            await this.db.registerUserWithCode(ctx.from.id, email, password, pendingCode);
+                            user = await this.db.getUser(ctx.from.id);
+                            ctx.session.pendingCode = null;
+                        } catch (regError) {
+                            await ctx.deleteMessage(statusMsg.message_id).catch(() => { });
+                            return ctx.reply('❌ Registration failed: ' + regError.message);
+                        }
                     }
-                );
 
-                const adminId = process.env.ADMIN_CHAT_ID;
-                if (adminId) {
-                    const escapeMarkdown = (text) => {
-                        if (!text) return '';
-                        return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+                    iqClient.connect();
+
+                    iqClient.onTradeOpened = (tradeData) => {
+                        this.handleUserTradeOpened(ctx.from.id, tradeData);
                     };
 
-                    const safeName = escapeMarkdown(ctx.from.first_name || 'User');
-                    const safeUsername = ctx.from.username ? escapeMarkdown(ctx.from.username) : 'no_username';
-                    const safeEmail = escapeMarkdown(email);
+                    iqClient.onTradeClosed = (tradeResult) => {
+                        this.handleUserTradeClosed(ctx.from.id, tradeResult);
+                    };
 
-                    await ctx.telegram.sendMessage(
-                        adminId,
-                        `👤 *User Connected*\n\n` +
-                        `User: ${safeName} (@${safeUsername})\n` +
-                        `ID: ${ctx.from.id}\n` +
-                        `Email: ${safeEmail}`,
-                        { parse_mode: 'Markdown' }
+                    iqClient.onBalanceChanged = ({ amount, currency }) => {
+                        this.db.updateUser(ctx.from.id, { balance: amount, currency, connected: true });
+                    };
+
+                    this.userConnections.set(ctx.from.id, iqClient);
+
+                    await this.db.updateUser(ctx.from.id, {
+                        connected: true,
+                        last_active: new Date()
+                    });
+
+                    await ctx.deleteMessage(statusMsg.message_id);
+
+                    await ctx.reply(
+                        '🎉 *Successfully Connected to IQ Option!*\n' +
+                        '━━━━━━━━━━━━━━━\n\n' +
+                        '📺 [COMPLETE VIDEO GUIDE](https://youtu.be/tePDDjJnMuM)\n\n' +
+                        '*What happens now?*\n' +
+                        '• Signals execute trades automatically on your account\n' +
+                        '• You get notified on every trade open & close\n' +
+                        '• Martingale doubles bet on loss, resets on win\n\n' +
+                        '*⏩ NEXT STEPS:*\n\n' +
+                        '*1️⃣ Set your trade amount*\n' +
+                        '`/setamount 1500` — minimum ₦1,500 (NGN) or $1 (USD)\n\n' +
+                        '*2️⃣ Choose your account type*\n' +
+                        'Practice mode is default (safe demo money)\n' +
+                        'Tap *💵 Real Mode* when ready to use real money\n\n' +
+                        '*3️⃣ Check martingale settings*\n' +
+                        'Tap *🤖 Martingale* to see your 6-step sequence\n\n' +
+                        '*4️⃣ Wait for signals — trades run automatically!*\n\n' +
+                        '━━━━━━━━━━━━━━━\n' +
+                        '_Type /help anytime to see all commands._',
+                        {
+                            parse_mode: 'Markdown',
+                            disable_web_page_preview: false,
+                            ...this.userMainMenu
+                        }
                     );
-                }
 
-            } catch (error) {
-                console.error('Login error:', error);
-                try { await ctx.deleteMessage(statusMsg.message_id); } catch (_) { }
-                ctx.reply('❌ Login failed: ' + error.message);
-            }
+                    const adminId = process.env.ADMIN_CHAT_ID;
+                    if (adminId) {
+                        const escapeMarkdown = (text) => {
+                            if (!text) return '';
+                            return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+                        };
+
+                        const safeName = escapeMarkdown(ctx.from.first_name || 'User');
+                        const safeUsername = ctx.from.username ? escapeMarkdown(ctx.from.username) : 'no_username';
+                        const safeEmail = escapeMarkdown(email);
+
+                        await ctx.telegram.sendMessage(
+                            adminId,
+                            `👤 *User Connected*\n\n` +
+                            `User: ${safeName} (@${safeUsername})\n` +
+                            `ID: ${ctx.from.id}\n` +
+                            `Email: ${safeEmail}`,
+                            { parse_mode: 'Markdown' }
+                        );
+                    }
+
+                } catch (error) {
+                    console.error('Login error:', error);
+                    try { await ctx.deleteMessage(statusMsg.message_id); } catch (_) { }
+                    ctx.reply('❌ Login failed: ' + error.message);
+                }
+            });
         });
 
         // Logout command
@@ -297,15 +331,15 @@ class TelegramBot {
 
             const client = this.userConnections.get(ctx.from.id);
             if (client) {
-                client.disconnect();
+                // Use the new logout method that clears SSID
+                await client.logout();
                 this.userConnections.delete(ctx.from.id);
             }
 
-            await this.db.updateUser(ctx.from.id, { connected: false });
             await ctx.reply('👋 Logged out from IQ Option');
         });
 
-        // Status command
+        // Status command - HIGH PRIORITY
         this.bot.command('status', async (ctx) => {
             if (!ctx.state.user) return;
             console.log(`[BOT] 📥 Status requested by user ${ctx.from.id}`);
@@ -335,7 +369,7 @@ class TelegramBot {
             await ctx.reply(message, { parse_mode: 'Markdown' });
         });
 
-        // Balance command
+        // Balance command - HIGH PRIORITY
         this.bot.command('balance', async (ctx) => {
             if (!ctx.state.user) return;
             console.log(`[BOT] 📥 Balance requested by user ${ctx.from.id}`);
@@ -687,7 +721,7 @@ class TelegramBot {
             }
         });
 
-        // ✅ NEW: Admin: Revoke user - SHOWS LIST OF USERS WITH BUTTONS
+        // Admin: Revoke user - SHOWS LIST OF USERS WITH BUTTONS
         this.bot.command('revoke', async (ctx) => {
             if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only');
 
@@ -702,7 +736,6 @@ class TelegramBot {
                 let message = '🔴 *Select user to revoke:*\n\n';
                 const buttons = [];
 
-                // Create a button for each user
                 for (const user of activeUsers) {
                     message += `👤 *${user.email}*\n`;
                     message += `   ID: \`${user._id}\`\n`;
@@ -953,21 +986,18 @@ class TelegramBot {
             const targetId = ctx.match[0].replace('revoke_', '');
 
             try {
-                // Get user info before deleting
                 const user = await this.db.getUser(targetId);
                 if (!user) {
                     await ctx.answerCbQuery('❌ User not found');
                     return;
                 }
 
-                // Disconnect if connected
                 const client = this.userConnections.get(targetId);
                 if (client) {
                     client.disconnect();
                     this.userConnections.delete(targetId);
                 }
 
-                // Delete from database
                 const deleted = await this.db.deleteUser(targetId);
 
                 if (deleted) {
@@ -1276,7 +1306,6 @@ class TelegramBot {
 
         this.bot.action('reset_prefs_confirm', async (ctx) => {
             await ctx.answerCbQuery();
-            // Reset basic prefs
             await this.db.updateUser(ctx.from.id, {
                 martingale_enabled: true,
                 tradeAmount: 1500,
@@ -1291,7 +1320,6 @@ class TelegramBot {
         });
     }
 
-    // ✅ UPDATED: Channel notifications only for admin (7159524412)
     async handleUserTradeOpened(userId, tradeData) {
         try {
             const user = await this.db.getUser(userId);
@@ -1299,7 +1327,7 @@ class TelegramBot {
             const symbol = this.getCurrencySymbol(client?.currency || user.currency || 'USD');
 
             const channels = await this.db.getActiveChannels();
-            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
+            const adminId = process.env.ADMIN_CHAT_ID;
 
             const message = `
 🟢 NEW TRADE SIGNAL
@@ -1314,26 +1342,22 @@ class TelegramBot {
 
             console.log(`📤 Sending trade opened notification for user ${userId}`);
 
-            // 1. Send to channel ONLY if this is the admin (7159524412)
             if (userId === adminId) {
                 for (const channel of channels) {
                     try {
                         await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
-                        console.log(`✅ Admin trade sent to channel ${channel.channel_id}`);
                     } catch (err) {
                         console.error(`Failed to send admin trade to channel:`, err.message);
                     }
                 }
             }
 
-            // 2. Send to user's DM (always)
             try {
                 await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
             } catch (err) {
                 console.error(`Failed to send to user ${userId}:`, err.message);
             }
 
-            // 3. Send to admin DM for monitoring (always)
             if (adminId && adminId !== userId) {
                 try {
                     await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
@@ -1347,14 +1371,13 @@ class TelegramBot {
         }
     }
 
-    // ✅ UPDATED: Channel notifications only for admin (7159524412)
     async handleUserTradeClosed(userId, tradeResult) {
         try {
             const user = await this.db.getUser(userId);
             if (!user) return;
 
             const channels = await this.db.getActiveChannels();
-            const adminId = process.env.ADMIN_CHAT_ID; // 7159524412
+            const adminId = process.env.ADMIN_CHAT_ID;
 
             const resultEmoji = tradeResult.isWin ? '✅' : '❌';
             const resultText = tradeResult.isWin ? 'WIN' : 'LOSS';
@@ -1368,26 +1391,22 @@ ${resultEmoji} ${resultText}
 
             console.log(`📤 Sending trade result for user ${userId}: ${tradeResult.isWin ? 'WIN' : 'LOSS'}`);
 
-            // 1. Send to channel ONLY if this is the admin (7159524412)
             if (userId === adminId) {
                 for (const channel of channels) {
                     try {
                         await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
-                        console.log(`✅ Admin result sent to channel ${channel.channel_id}`);
                     } catch (err) {
                         console.error(`Failed to send admin result to channel:`, err.message);
                     }
                 }
             }
 
-            // 2. Send to user's DM (always)
             try {
                 await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
             } catch (err) {
                 console.error(`Failed to send to user ${userId}:`, err.message);
             }
 
-            // 3. Send to admin DM for monitoring (always)
             if (adminId && adminId !== userId) {
                 try {
                     await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
@@ -1401,7 +1420,6 @@ ${resultEmoji} ${resultText}
         }
     }
 
-    // Keep these for compatibility but not used
     async sendToUser(userId, type, data) { }
     async sendToAdmin(type, data) { }
 
@@ -1431,7 +1449,7 @@ ${resultEmoji} ${resultText}
 
     getAllConnectedClients() {
         const clients = [];
-        const seen = new Set(); // Add this to track unique users
+        const seen = new Set();
         for (const [userId, client] of this.userConnections) {
             if (client.connected && !seen.has(userId)) {
                 seen.add(userId);
