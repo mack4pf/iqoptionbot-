@@ -20,15 +20,15 @@ class AutoTrader {
 
         // Minimum AND MAXIMUM trade amounts per currency
         this.currencyLimits = {
-            NGN: { min: 1500, max: 500000 },
-            USD: { min: 1, max: 1000 },
-            EUR: { min: 1, max: 1000 },
-            GBP: { min: 1, max: 1000 },
-            BRL: { min: 5, max: 5000 },
-            INR: { min: 70, max: 70000 },
-            MXN: { min: 20, max: 20000 },
-            AED: { min: 5, max: 5000 },
-            ZAR: { min: 20, max: 20000 },
+            NGN: { min: 1500, max: 50000000 },
+            USD: { min: 1, max: 10000000 },
+            EUR: { min: 1, max: 100000 },
+            GBP: { min: 1, max: 100000 },
+            BRL: { min: 5, max: 500000 },
+            INR: { min: 70, max: 7000000 },
+            MXN: { min: 20, max: 2000000 },
+            AED: { min: 5, max: 500000 },
+            ZAR: { min: 20, max: 2000000 },
         };
     }
 
