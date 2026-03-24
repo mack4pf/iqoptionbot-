@@ -513,7 +513,44 @@ class TelegramBot {
                 }
             );
         });
+        this.bot.command('setduration', async (ctx) => {
+            if (!ctx.state.user?.is_admin) {
+                return ctx.reply('❌ Admin only command');
+            }
 
+            const args = ctx.message.text.split(' ');
+            if (args.length < 2) {
+                const currentDuration = await this.db.getGlobalSetting('trade_duration', 5);
+                return ctx.reply(
+                    `⏱️ *Current trade duration:* ${currentDuration} minutes\n\n` +
+                    `*To change:*\n` +
+                    `/setduration 3 — Set to 3 minutes\n` +
+                    `/setduration 5 — Set to 5 minutes\n\n` +
+                    `_This applies to ALL users for ALL auto-trades._`,
+                    { parse_mode: 'Markdown' }
+                );
+            }
+
+            const duration = parseInt(args[1]);
+            if (duration !== 3 && duration !== 5) {
+                return ctx.reply('❌ Invalid duration. Use `/setduration 3` or `/setduration 5`', { parse_mode: 'Markdown' });
+            }
+
+            const success = await this.db.setGlobalSetting('trade_duration', duration);
+            if (success) {
+                await ctx.reply(
+                    `✅ *Trade duration set to ${duration} minutes*\n\n` +
+                    `All future auto-trades will use ${duration} minute(s).\n\n` +
+                    `_Current open trades not affected._`,
+                    { parse_mode: 'Markdown' }
+                );
+
+                // Notify admin
+                console.log(`📢 Admin ${ctx.from.id} set trade duration to ${duration} minutes`);
+            } else {
+                await ctx.reply('❌ Failed to save setting. Check logs.');
+            }
+        });
         // Help command - WITH VIDEO GUIDE
         this.bot.command('help', async (ctx) => {
             const user = ctx.state.user;

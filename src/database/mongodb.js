@@ -359,7 +359,43 @@ class MongoDB {
 
         return true;
     }
+    // ========== GLOBAL SETTINGS METHODS ==========
 
+    async getGlobalSetting(key, defaultValue = 5) {
+        try {
+            const collection = this.db.collection('settings');
+            const setting = await collection.findOne({ key });
+            if (setting) {
+                return setting.value;
+            }
+            // Create default setting if not exists
+            await collection.updateOne(
+                { key },
+                { $set: { value: defaultValue, updated_at: new Date() } },
+                { upsert: true }
+            );
+            return defaultValue;
+        } catch (error) {
+            console.error(`Error getting setting ${key}:`, error);
+            return defaultValue;
+        }
+    }
+
+    async setGlobalSetting(key, value) {
+        try {
+            const collection = this.db.collection('settings');
+            await collection.updateOne(
+                { key },
+                { $set: { value, updated_at: new Date() } },
+                { upsert: true }
+            );
+            console.log(`✅ Global setting ${key} set to ${value}`);
+            return true;
+        } catch (error) {
+            console.error(`Error setting ${key}:`, error);
+            return false;
+        }
+    }
     async getAllUsers() {
         const users = this.db.collection('users');
         return await users.find({}).toArray();
