@@ -52,107 +52,87 @@ class AutoTrader {
     getBaseAmount(user, currency) {
         const min = this.getCurrencyMin(currency);
         const userSet = user?.tradeAmount;
-
-        // ALWAYS use the user's current tradeAmount from DB as the source of truth
         return this.validateAmount(userSet || min, currency);
     }
 
     getMartingaleState(userId, user, currency) {
-        // Always get fresh state from database first
+        // FIRST: Check if we have fresh state in memory
+        const memoryState = this.activeTrades.get(userId);
+        if (memoryState && memoryState.currency === currency && memoryState.baseAmount === this.getBaseAmount(user, currency)) {
+            console.log(`📊 User ${userId}: Using memory state - losses=${memoryState.losses}, step=${memoryState.step}, amount=${memoryState.currentAmount}`);
+            return memoryState;
+        }
+
+        // Otherwise load from database
         const base = this.getBaseAmount(user, currency);
         const db = user?.martingale || {};
 
-        // CRITICAL: Check if user changed their base amount via /setamount
-        // Use Number() to ensure numeric comparison, and tolerance for floating point
-        const storedBase = Number(db.base_amount) || base;
-        const currentBase = Number(base);
+        // Get losses from database
+        let losses = db.loss_streak || 0;
 
-        // Only reset if base changed by more than 1% (allows for rounding errors)
-        // AND the user has the martingale flag indicating they used /setamount
-        // Actually simpler: Compare as numbers with small tolerance
-        const baseChanged = Math.abs(storedBase - currentBase) > 0.01;
+        // Calculate step based on losses: step = losses (capped)
+        let step = Math.min(losses, this.martingaleMultipliers.length - 1);
+        let amount = base * this.martingaleMultipliers[step];
 
-        // Log when base change is detected
-        if (baseChanged) {
-            console.log(`⚠️ User ${userId}: Base changed from ${storedBase} to ${currentBase}. Resetting martingale.`);
-        }
+        const max = this.getCurrencyMax(currency);
+        if (amount > max) amount = max;
 
         const state = {
-            step: baseChanged ? 0 : (db.current_step || 0),
-            losses: baseChanged ? 0 : (db.loss_streak || 0),
-            baseAmount: currentBase,
-            currentAmount: baseChanged ? currentBase : (db.current_amount || currentBase),
+            step: step,
+            losses: losses,
+            baseAmount: base,
+            currentAmount: amount,
             initialBalance: db.initial_balance || 0,
             currency: currency
         };
 
         this.activeTrades.set(userId, state);
+        console.log(`📊 User ${userId}: DB loaded - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}`);
         return state;
     }
 
     resetMartingale(userId, state) {
-        // Log the current state before reset
         console.log(`🔄 Resetting martingale for user ${userId}`);
         console.log(`   BEFORE: step=${state.step}, losses=${state.losses}, amount=${state.currentAmount}`);
-        console.log(`   AFTER: base=${state.baseAmount}`);
 
         state.step = 0;
         state.losses = 0;
         state.currentAmount = state.baseAmount;
+
+        console.log(`   AFTER: step=${state.step}, losses=${state.losses}, amount=${state.currentAmount}`);
         this.activeTrades.set(userId, state);
     }
 
     advanceMartingale(userId, state) {
-        // Log the current state before advancing
         console.log(`📊 User ${userId} BEFORE advance: step=${state.step}, losses=${state.losses}, amount=${state.currentAmount}`);
 
+        // Increase loss counter
         state.losses++;
 
         if (state.losses >= this.MAX_STEPS) {
             console.log(`🔄 User ${userId}: 8 consecutive losses. Resetting martingale.`);
             this.resetMartingale(userId, state);
         } else {
-            const oldStep = state.step;
-            state.step = Math.min(state.step + 1, this.martingaleMultipliers.length - 1);
-
-            console.log(`   Step advanced: ${oldStep} → ${state.step}, multiplier = ${this.martingaleMultipliers[state.step]}`);
-
-            state.currentAmount = state.baseAmount * this.martingaleMultipliers[state.step];
+            // CORRECT: next step = number of losses (capped)
+            state.step = Math.min(state.losses, this.martingaleMultipliers.length - 1);
+            const multiplier = this.martingaleMultipliers[state.step];
+            let newAmount = state.baseAmount * multiplier;
 
             const max = this.getCurrencyMax(state.currency);
-            if (state.currentAmount > max) {
+            if (newAmount > max) {
                 console.log(`⚠️ User ${userId}: Martingale would exceed max amount. Capping at ${max}`);
-                state.currentAmount = max;
+                newAmount = max;
             }
+            state.currentAmount = newAmount;
 
-            console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/8)`);
+            console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/8) - Multiplier: ${multiplier}x`);
             this.activeTrades.set(userId, state);
         }
     }
 
     checkBalanceGrowth(userId, state, currentBalance) {
-        // TEMPORARILY DISABLED - This was causing martingale to reset early
-        // Re-enable when we add admin toggle for this feature
+        // COMPLETELY DISABLED - No auto-balance changes
         return false;
-
-        /* Original code disabled for debugging
-        if (state.initialBalance > 0 && currentBalance >= state.initialBalance * 1.10) {
-            let newBase = Math.round(state.baseAmount * 1.10);
-    
-            const max = this.getCurrencyMax(state.currency);
-            if (newBase > max) newBase = max;
-    
-            console.log(`📈 User ${userId}: Balance grew 10%! Boosting base ${state.baseAmount} → ${newBase}`);
-            state.baseAmount = newBase;
-            state.initialBalance = currentBalance;
-            state.currentAmount = newBase;
-            state.step = 0;
-            state.losses = 0;
-            this.activeTrades.set(userId, state);
-            return true;
-        }
-        return false;
-        */
     }
 
     async executeTrade(userId, client, signal) {
@@ -303,6 +283,7 @@ class AutoTrader {
                 state = { step: 0, losses: 0, baseAmount: base, currentAmount: base, initialBalance: 0, currency };
             }
 
+            // Update martingale based on result
             if (martingaleEnabled) {
                 if (isWin) {
                     console.log(`✅ User ${userId} WIN ${currencySymbol}${profit.toFixed(2)}. Resetting martingale to base ${currencySymbol}${state.baseAmount}`);
@@ -312,6 +293,7 @@ class AutoTrader {
                 }
             }
 
+            // Update database - AWAIT to ensure completion
             if (user) {
                 const stats = user.stats || { total_trades: 0, wins: 0, losses: 0, total_profit: 0 };
                 stats.total_trades++;
@@ -333,13 +315,16 @@ class AutoTrader {
                         initial_balance: state.initialBalance
                     }
                 });
+
+                console.log(`📝 User ${userId}: Database saved - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}`);
             }
 
+            // Send notifications
             if (user && this.telegramBot) {
                 const stepDisplay = martingaleEnabled
                     ? (isWin
                         ? `↩️ Reset to ${currencySymbol}${state.currentAmount}`
-                        : `📉 Step ${state.step + 1}/8 → Next: ${currencySymbol}${state.currentAmount}`)
+                        : `📉 Loss ${state.losses}/8 → Next: ${currencySymbol}${state.currentAmount}`)
                     : `🔴 Martingale OFF`;
 
                 const message = `

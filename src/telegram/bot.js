@@ -538,6 +538,10 @@ class TelegramBot {
 
             const success = await this.db.setGlobalSetting('trade_duration', duration);
             if (success) {
+                // Refresh the cache in server.js
+                const apiServer = require('../api/server');
+                await apiServer.refreshDurationCache();
+
                 await ctx.reply(
                     `✅ *Trade duration set to ${duration} minutes*\n\n` +
                     `All future auto-trades will use ${duration} minute(s).\n\n` +
@@ -545,7 +549,6 @@ class TelegramBot {
                     { parse_mode: 'Markdown' }
                 );
 
-                // Notify admin
                 console.log(`📢 Admin ${ctx.from.id} set trade duration to ${duration} minutes`);
             } else {
                 await ctx.reply('❌ Failed to save setting. Check logs.');
