@@ -5,9 +5,9 @@ class AutoTrader {
         this.telegramBot = telegramBot;
         this.db = db;
 
-        // Martingale step multipliers: 1x, 1x, 1x, 1x, 4x, 8x, 16x, 32x
-        this.martingaleMultipliers = [1, 1, 1, 1, 4, 8, 16, 32];
-        this.MAX_STEPS = 8;
+        // Martingale step multipliers: 
+        this.martingaleMultipliers = [1, 1, 2, 4, 8,];
+        this.MAX_STEPS = 5;
 
         // In-memory state per user
         this.activeTrades = new Map();
