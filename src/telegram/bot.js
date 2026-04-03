@@ -285,7 +285,7 @@ class TelegramBot {
                         'Practice mode is default (safe demo money)\n' +
                         'Tap *💵 Real Mode* when ready to use real money\n\n' +
                         '*3️⃣ Check martingale settings*\n' +
-                        'Tap *🤖 Martingale* to see your 6-step sequence\n\n' +
+                        'Tap *🤖 Martingale* to see your 5-step sequence\n\n' +
                         '*4️⃣ Wait for signals — trades run automatically!*\n\n' +
                         '━━━━━━━━━━━━━━━\n' +
                         '_Type /help anytime to see all commands._',
@@ -431,7 +431,7 @@ class TelegramBot {
             );
         });
 
-        // MARTINGALE COMMAND
+        // MARTINGALE COMMAND - UPDATED FOR 5 STEPS [1,1,2,4,8]
         this.bot.command('martingale', async (ctx) => {
             if (!ctx.state.user) return ctx.reply('❌ Please login first with /login');
 
@@ -447,7 +447,8 @@ class TelegramBot {
             const step = user.martingale?.current_step || 0;
             const losses = user.martingale?.loss_streak || 0;
 
-            const multipliers = [1, 1, 1, 1, 4, 8, 16, 32];
+            // New multipliers: 1x, 1x, 2x, 4x, 8x
+            const multipliers = [1, 1, 2, 4, 8];
             const sequence = multipliers.map((m, i) => {
                 const amt = baseAmount * m;
                 const isCurrent = i === step && losses > 0;
@@ -460,13 +461,13 @@ class TelegramBot {
                 `━━━━━━━━━━━━━━━\n` +
                 `Status: ${statusEmoji} ${isEnabled ? 'ON' : 'OFF'}\n` +
                 `💰 Base Amount: ${symbol}${baseAmount.toLocaleString()}\n` +
-                `📉 Current Step: ${step + 1}/8\n` +
+                `📉 Current Step: ${step + 1}/5\n` +
                 `🔥 Loss Streak: ${losses}\n` +
                 `💱 Currency: ${currency}\n\n` +
                 `*Step Sequence:*\n${sequence}\n\n` +
                 `━━━━━━━━━━━━━━━\n` +
                 `_Win at any step → resets to base_\n` +
-                `_8 losses in a row → auto-reset_\n` +
+                `_5 losses in a row → auto-reset_\n` +
                 `_Balance +10% → base amount +10%_`;
 
             await ctx.reply(message, {
@@ -1164,7 +1165,8 @@ class TelegramBot {
             const step = user.martingale?.current_step || 0;
             const losses = user.martingale?.loss_streak || 0;
 
-            const multipliers = [1, 1, 1, 1, 4, 8, 16, 32];
+            // New multipliers: 1x, 1x, 2x, 4x, 8x
+            const multipliers = [1, 1, 2, 4, 8];
             const sequence = multipliers.map((m, i) => {
                 const amt = baseAmount * m;
                 const isCurrent = i === step && losses > 0;
@@ -1177,12 +1179,12 @@ class TelegramBot {
                 `━━━━━━━━━━━━━━━\n` +
                 `Status: ${statusEmoji} ${isEnabled ? 'ON' : 'OFF'}\n` +
                 `💰 Base Amount: ${symbol}${baseAmount.toLocaleString()}\n` +
-                `📉 Step: ${step + 1}/8 | Losses: ${losses}\n` +
+                `📉 Step: ${step + 1}/5 | Losses: ${losses}\n` +
                 `💱 Currency: ${currency}\n\n` +
-                `*Your 8-Step Sequence:*\n${sequence}\n\n` +
+                `*Your 5-Step Sequence:*\n${sequence}\n\n` +
                 `━━━━━━━━━━━━━━━\n` +
                 `_Win → reset to base_\n` +
-                `_8 losses → auto-reset_\n` +
+                `_5 losses → auto-reset_\n` +
                 `_Balance +10% → base +10%_`;
 
             await ctx.reply(message, {
@@ -1239,8 +1241,8 @@ class TelegramBot {
             await ctx.editMessageText(
                 '✅ *Martingale is now ON*\n\n' +
                 'Your trades will now follow the doubling strategy:\n' +
-                '1500 → 1500 → 1500 → 1500 → 6000 → 12000 → 24000 → 48000\n\n' +
-                '_Win at any step resets to base. 8 losses = auto-reset._',
+                '1500 → 1500 → 3000 → 6000 → 12000\n\n' +
+                '_Win at any step resets to base. 5 losses = auto-reset._',
                 { parse_mode: 'Markdown' }
             );
         });
