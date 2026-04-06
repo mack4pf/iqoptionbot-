@@ -35,6 +35,18 @@ class MongoDB {
 
             // Users collection indexes
             try {
+                // Drop the problematic index if it exists to avoid duplicate key errors
+                const existingIndexes = await users.listIndexes().toArray();
+                const hasEmail1 = existingIndexes.some(idx => idx.name === 'email_1');
+                if (hasEmail1) {
+                    await users.dropIndex('email_1');
+                    console.log('✅ Dropped old email_1 index');
+                }
+            } catch (err) {
+                console.log('ℹ️ Could not drop email_1 index (might not exist)');
+            }
+
+            try {
                 await users.createIndex({ "email": 1 }, { unique: false, name: "email_index" });
             } catch (err) {
                 if (err.codeName === 'IndexKeySpecsConflict') console.log('ℹ️ Email index exists');
@@ -239,8 +251,6 @@ class MongoDB {
             throw new Error('Invalid or expired access code');
         }
 
-        await this.useAccessCode(code, chatId);
-
         const encrypted = this.encrypt(password);
         const users = this.db.collection('users');
 
@@ -280,8 +290,45 @@ class MongoDB {
             ssid_updated_at: null
         };
 
+        // Insert user FIRST
         await users.insertOne(user);
+        
+        // ONLY if insertion succeeds, mark the code as used
+        await this.useAccessCode(code, chatId);
+
         return user;
+    }
+
+    // ✅ NEW: Update existing user with a new access code
+    async updateUserAccessCode(chatId, code) {
+        const accessCode = await this.validateAccessCode(code);
+        if (!accessCode) {
+            throw new Error('Invalid or expired access code');
+        }
+
+        const users = this.db.collection('users');
+        const user = await users.findOne({ _id: chatId.toString() });
+        
+        if (!user) {
+            throw new Error('User not found');
+        }
+
+        // Mark code as used FIRST since we know the user exists
+        await this.useAccessCode(code, chatId);
+
+        // Update user access
+        await users.updateOne(
+            { _id: chatId.toString() },
+            { 
+                $set: { 
+                    access_code: code,
+                    access_expires_at: accessCode.expires_at,
+                    last_active: new Date()
+                } 
+            }
+        );
+
+        return true;
     }
 
     async getUser(chatId) {

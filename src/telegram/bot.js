@@ -101,6 +101,7 @@ class TelegramBot {
                             Markup.keyboard([['🔄 Request New Code']]).resize()
                         );
                     }
+                    console.log(`✅ User ${userId} has valid access until ${ctx.state.user.access_expires_at}`);
                 }
 
                 return next();
@@ -167,11 +168,30 @@ class TelegramBot {
 
             try {
                 const existingUser = await this.db.getUser(ctx.from.id);
+                
+                // If user exists, check if they are trying to extend access
                 if (existingUser) {
-                    return ctx.reply(
-                        '❌ You are already registered!',
-                        ctx.state.user?.is_admin ? this.adminMainMenu : this.userMainMenu
-                    );
+                    const hasAccess = await this.db.hasValidAccess(ctx.from.id);
+                    if (hasAccess) {
+                        return ctx.reply(
+                            '✅ You are already registered and your access is active!',
+                            existingUser.is_admin ? this.adminMainMenu : this.userMainMenu
+                        );
+                    } else {
+                        // User exists but access is expired - allow using NEW code
+                        try {
+                            const success = await this.db.updateUserAccessCode(ctx.from.id, code);
+                            if (success) {
+                                return ctx.reply(
+                                    '✅ *Access Extended Successfully!*\n\n' +
+                                    'Your account has been re-activated with the new code.',
+                                    { parse_mode: 'Markdown', ...this.userMainMenu }
+                                );
+                            }
+                        } catch (err) {
+                            return ctx.reply('❌ Failed to use code: ' + err.message);
+                        }
+                    }
                 }
 
                 const accessCode = await this.db.validateAccessCode(code);
@@ -198,6 +218,7 @@ class TelegramBot {
                 );
 
             } catch (error) {
+                console.error('Registration error:', error);
                 ctx.reply('❌ Registration failed: ' + error.message);
             }
         });
@@ -346,6 +367,7 @@ class TelegramBot {
 
             const client = this.userConnections.get(ctx.from.id);
             const connected = client?.connected || false;
+            const hasSsid = !!ctx.state.user.ssid;
 
             const balance = client?.balance || ctx.state.user.balance || 0;
             const currency = client?.currency || ctx.state.user.currency || 'USD';
@@ -356,7 +378,19 @@ class TelegramBot {
             const tradeSymbol = this.getCurrencySymbol(ctx.state.user.currency || 'NGN');
 
             let message = `📊 *Connection Status*\n\n`;
-            message += `🔌 IQ Option: ${connected ? '✅ Connected' : '❌ Disconnected'}\n`;
+            
+            if (connected) {
+                message += `🔌 IQ Option: ✅ Connected\n`;
+            } else if (hasSsid) {
+                message += `🔌 IQ Option: ⚠️ Session active, waiting for trade...\n`;
+                // Try to trigger a silent reconnect if not in Map but has SSID
+                if (!client) {
+                    this.restoreSingleUserConnection(ctx.from.id.toString()).catch(console.error);
+                }
+            } else {
+                message += `🔌 IQ Option: ❌ Disconnected\n`;
+            }
+
             message += `💰 Balance: ${symbol}${balance}\n`;
             message += `💳 Account: ${accountType}\n`;
             message += `💰 Trade Amount: ${tradeSymbol}${tradeAmount}\n`;
@@ -364,6 +398,10 @@ class TelegramBot {
 
             if (connected) {
                 message += `\n🟢 *Online and receiving trades*`;
+            } else if (!connected && hasSsid) {
+                message += `\n🟡 *Attempting background reconnection...*`;
+            } else {
+                message += `\n🔴 *Please use /login to connect*`;
             }
 
             await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -1477,9 +1515,62 @@ ${resultEmoji} ${resultText}
         }
     }
 
+    async restoreUserConnections() {
+        console.log('🔄 Restoring user connections from database...');
+        try {
+            const users = await this.db.getAllUsers();
+            let count = 0;
+
+            for (const user of users) {
+                if (user.ssid && !this.userConnections.has(user._id)) {
+                    await this.restoreSingleUserConnection(user._id);
+                    count++;
+                    // Small delay to prevent rate limits during mass restore
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+            }
+            console.log(`✅ Attempted restoration for ${count} users`);
+        } catch (error) {
+            console.error('❌ Failed to restore connections:', error.message);
+        }
+    }
+
+    async restoreSingleUserConnection(userId) {
+        if (this.userConnections.has(userId)) return;
+
+        try {
+            const user = await this.db.getUser(userId);
+            if (!user || !user.ssid) return;
+
+            console.log(`🔌 Restoring session for user ${userId} (${user.email})...`);
+            
+            // We need a dummy password for the client if just using SSID, but the client doesn't need it if restoreSession works
+            const iqClient = new IQOptionClient(user.email, 'restored_session', userId, this.db);
+            
+            // Client.login() will call restoreSession() which uses the SSID from DB
+            const restored = await iqClient.login();
+            
+            if (restored) {
+                iqClient.onTradeOpened = (tradeData) => this.handleUserTradeOpened(userId, tradeData);
+                iqClient.onTradeClosed = (tradeResult) => this.handleUserTradeClosed(userId, tradeResult);
+                iqClient.onBalanceChanged = ({ amount, currency }) => {
+                    this.db.updateUser(userId, { balance: amount, currency, connected: true });
+                };
+
+                this.userConnections.set(userId, iqClient);
+                console.log(`✅ Session restored successfully for user ${userId}`);
+            }
+        } catch (error) {
+            console.error(`❌ Failed to restore session for user ${userId}:`, error.message);
+        }
+    }
+
     async start() {
         await this.bot.launch();
         console.log('🤖 Telegram bot started with login support');
+
+        // Restore connections for users who have active sessions
+        this.restoreUserConnections().catch(err => console.error('Restoration error:', err));
 
         process.once('SIGINT', () => this.bot.stop('SIGINT'));
         process.once('SIGTERM', () => this.bot.stop('SIGTERM'));
