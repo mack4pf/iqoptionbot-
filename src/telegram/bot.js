@@ -923,6 +923,55 @@ class TelegramBot {
             await this.db.updateUser(ctx.from.id, { autoTraderEnabled: true });
             await ctx.reply('📡 *Auto‑trader started.*\nYou will now receive signals again.', { parse_mode: 'Markdown' });
         });
+
+        // 📢 ADMIN BROADCAST COMMAND
+        this.bot.command('broadcast', async (ctx) => {
+            if (!ctx.state.user?.is_admin) return ctx.reply('❌ Admin only command');
+
+            const message = ctx.message.text.split(' ').slice(1).join(' ');
+            if (!message) {
+                return ctx.reply(
+                    '❌ *Usage:* `/broadcast [message]`\n\n' +
+                    'Example: `/broadcast ⚠️ Please check your connection status with /status to ensure you don\'t miss any trades!`',
+                    { parse_mode: 'Markdown' }
+                );
+            }
+
+            const statusMsg = await ctx.reply(`⏳ Sending broadcast to all users...`);
+            
+            try {
+                const users = await this.db.getAllUsers();
+                const activeUsers = users.filter(u => !u.is_admin);
+                
+                let successCount = 0;
+                let failCount = 0;
+
+                for (const user of activeUsers) {
+                    try {
+                        await ctx.telegram.sendMessage(user._id, message, { parse_mode: 'Markdown' });
+                        successCount++;
+                    } catch (err) {
+                        console.error(`Failed to broadcast to ${user._id}:`, err.message);
+                        failCount++;
+                    }
+                    // Small delay to avoid Telegram rate limits
+                    await new Promise(r => setTimeout(r, 50));
+                }
+
+                await ctx.telegram.editMessageText(
+                    ctx.chat.id,
+                    statusMsg.message_id,
+                    null,
+                    `✅ *Broadcast Complete*\n\n` +
+                    `📈 Delivered: ${successCount}\n` +
+                    `📉 Failed: ${failCount}`,
+                    { parse_mode: 'Markdown' }
+                );
+
+            } catch (error) {
+                ctx.reply('❌ Broadcast failed: ' + error.message);
+            }
+        });
     }
 
     // Handle revoke button clicks
