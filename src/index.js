@@ -10,12 +10,13 @@ class TradingBot {
         this.telegramBot = null;
         this.autoTrader = null;
         this.adminClient = null;
-        // Cache for recent signals (key: signalId, value: timestamp)
         this.recentSignals = new Map();
-        // Locks to prevent multiple executions for same user
         this.userLocks = new Set();
-        // Track processed users per signal
         this.signalUserTrades = new Map();
+
+        // CPU FIX: Add a queue to limit simultaneous trade executions across all users.
+        const { default: PQueue } = require('p-queue');
+        this.tradeQueue = new PQueue({ concurrency: 20 }); 
     }
 
     async initialize() {
@@ -188,27 +189,20 @@ class TradingBot {
             return;
         }
 
-        // 🚀 FIX: Execute all trades in parallel (no delays)
-        const tradePromises = [];
+        // 🚀 CPU FIX: Execute trades through a throttled queue (concurrency 20)
         const processedUsers = [];
 
         for (const { userId, client } of clients) {
-            // Per-user lock
-            if (this.userLocks.has(userId)) {
-                console.log(`⏸️ User ${userId} is already processing a trade, skipping.`);
-                continue;
-            }
+            // Per-user lock to prevent multiple signals hitting same user at once
+            if (this.userLocks.has(userId)) continue;
 
-            // Track if this user already traded for this signal
             const tradeKey = `${signal.signalId}_${userId}`;
-            if (this.signalUserTrades?.has(tradeKey)) {
-                console.log(`⏸️ User ${userId} already traded for signal ${signal.signalId}, skipping.`);
-                continue;
-            }
+            if (this.signalUserTrades?.has(tradeKey)) continue;
+
             if (!this.signalUserTrades) this.signalUserTrades = new Map();
             this.signalUserTrades.set(tradeKey, true);
 
-            // Clean up after 5 minutes
+            // Clean up processed flag after 5 minutes
             setTimeout(() => {
                 if (this.signalUserTrades) this.signalUserTrades.delete(tradeKey);
             }, 300000);
@@ -216,44 +210,26 @@ class TradingBot {
             this.userLocks.add(userId);
             processedUsers.push(userId);
 
-            // Create promise for this trade
-            const tradePromise = (async () => {
+            // CPU FIX: Add to the throttled queue instead of immediate execution
+            this.tradeQueue.add(async () => {
                 try {
-                    const currency = client?.currency || 'NGN';
-                    console.log(`🔍 User ${userId} — Currency: ${currency} | Account: ${client?.accountType}`);
-
                     const user = await this.db.getUser(userId);
-                    if (user && !user.autoTraderEnabled) {
-                        console.log(`⏸️ User ${userId} has auto‑trader disabled, skipping.`);
-                        return;
-                    }
+                    if (user && !user.autoTraderEnabled) return;
 
-                    const result = await this.autoTrader.executeTrade(userId, client, {
+                    await this.autoTrader.executeTrade(userId, client, {
                         asset: signal.asset,
                         direction: signal.direction,
                         duration: signal.duration
                     });
-
-                    if (result.success) {
-                        console.log(`✅ Trade placed for user ${userId}: ${currency}${result.amount} for ${signal.duration} min`);
-                    } else {
-                        console.log(`❌ Trade failed for user ${userId}: ${result.error}`);
-                    }
-
                 } catch (error) {
-                    console.error(`Error executing for user ${userId}:`, error.message);
+                    console.error(`Queue error for user ${userId}:`, error.message);
                 } finally {
                     this.userLocks.delete(userId);
                 }
-            })();
-
-            tradePromises.push(tradePromise);
+            });
         }
 
-        // Wait for ALL trades to complete in parallel
-        await Promise.all(tradePromises);
-
-        console.log(`✅ Signal execution complete for ${processedUsers.length} users (all executed in parallel)`);
+        console.log(`✅ Signal queued for ${processedUsers.length} users (concurrency: 20)`);
     }
 
     async shutdown() {

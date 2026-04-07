@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const axios = require('axios');
 
 class WebAppClient {
   constructor() {
@@ -7,9 +8,36 @@ class WebAppClient {
     this.botId = process.env.WEBAPP_BOT_ID;
     this.encryptionKey = process.env.ENCRYPTION_KEY;
     this.enabled = this.baseUrl && this.apiKey && this.botId;
+
+    // Simple in-memory cache to reduce CPU and network overhead
+    this.cache = new Map();
+    this.CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+    this.api = axios.create({
+      baseURL: this.baseUrl,
+      timeout: 5000,
+      headers: {
+        'X-Bot-API-Key': this.apiKey,
+        'Content-Type': 'application/json'
+      }
+    });
   }
 
-  // Decrypt password received from web app
+  // Helper to get from cache or fetch
+  async getCachedOrFetch(key, fetchFn) {
+    const cached = this.cache.get(key);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp < this.CACHE_TTL)) {
+      return cached.data;
+    }
+    const data = await fetchFn();
+    this.cache.set(key, { data, timestamp: now });
+    // Cleanup old cache occasionally
+    if (this.cache.size > 1000) this.cache.clear();
+    return data;
+  }
+
+  // Decrypt password
   decryptPassword(encryptedHex) {
     if (!encryptedHex || !this.encryptionKey) return null;
     try {
@@ -21,84 +49,48 @@ class WebAppClient {
       decrypted += decipher.final('utf8');
       return decrypted;
     } catch (error) {
-      console.log('❌ Decryption failed:', error.message);
       return null;
     }
   }
 
-  // Fetch with timeout helper
-  async fetchWithTimeout(url, options = {}, timeout = 5000) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal
-      });
-      clearTimeout(id);
-      return response;
-    } catch (error) {
-      clearTimeout(id);
-      throw error;
-    }
-  }
-
-  // Get user credentials and settings from web app
   async getUserSettings(email) {
     if (!this.enabled) return null;
-    try {
-      const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/api/internal/bot/${this.botId}/user/${encodeURIComponent(email)}/credentials`,
-        { headers: { 'X-Bot-API-Key': this.apiKey } },
-        5000
-      );
-      if (!response.ok) return null;
-      return await response.json();
-    } catch (error) {
-      console.log('⚠️ Web app API error (using local settings):', error.message);
-      return null;
-    }
+    const cacheKey = `settings_${email}`;
+    return this.getCachedOrFetch(cacheKey, async () => {
+      try {
+        const response = await this.api.get(`/api/internal/bot/${this.botId}/user/${encodeURIComponent(email)}/credentials`);
+        return response.data;
+      } catch (error) {
+        return null;
+      }
+    });
   }
 
-  // Check subscription status
   async checkSubscription(email) {
     if (!this.enabled) return null;
-    try {
-      const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/api/internal/bot/${this.botId}/user/${encodeURIComponent(email)}/subscription`,
-        { headers: { 'X-Bot-API-Key': this.apiKey } },
-        5000
-      );
-      if (!response.ok) return null;
-      const data = await response.json();
-      return data.valid === true;
-    } catch (error) {
-      console.log('⚠️ Web app subscription check failed (using local):', error.message);
-      return null;
-    }
+    const cacheKey = `sub_${email}`;
+    return this.getCachedOrFetch(cacheKey, async () => {
+      try {
+        const response = await this.api.get(`/api/internal/bot/${this.botId}/user/${encodeURIComponent(email)}/subscription`);
+        return response.data?.valid === true;
+      } catch (error) {
+        return null;
+      }
+    });
   }
 
-  // Sync settings when user changes via Telegram
   async syncUserSettings(email, settings) {
     if (!this.enabled) return false;
+    // We clear cache on sync so next fetch has latest
+    this.cache.delete(`settings_${email}`);
     try {
-      const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/api/internal/bot/${this.botId}/user/${encodeURIComponent(email)}/settings`,
-        {
-          method: 'POST',
-          headers: { 'X-Bot-API-Key': this.apiKey, 'Content-Type': 'application/json' },
-          body: JSON.stringify(settings)
-        },
-        5000
-      );
-      return response.ok;
+      const response = await this.api.post(`/api/internal/bot/${this.botId}/user/${encodeURIComponent(email)}/settings`, settings);
+      return response.status === 200 || response.status === 201;
     } catch (error) {
-      console.log('⚠️ Failed to sync settings to web app:', error.message);
       return false;
     }
   }
 
-  // Get credentials for login (when user doesn't provide password)
   async getUserCredentials(email) {
     return this.getUserSettings(email);
   }

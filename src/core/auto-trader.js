@@ -154,19 +154,46 @@ class AutoTrader {
                 }
             }
 
-            console.log(`🔍 Step 3: Checking connection status for ${userId}`);
-            console.log(`🔍 Connected: ${client?.connected}, ws readyState: ${client?.ws?.readyState}`);
-
-            // Point 4: Check if balanceId exists
+            // Step 3: Check connection & profile readiness
             if (!client.balanceId) {
                 console.log(`❌ User ${userId} has no balanceId, refreshing profile...`);
                 client.refreshProfile();
-                await new Promise(resolve => setTimeout(resolve, 2000));
             }
 
             const user = await this.db.getUser(userId);
-            const martingaleEnabled = user?.martingale_enabled !== false;
-            const webSettings = null; // Forced null for now
+            if (!user) return { success: false, error: 'User not found in database' };
+
+            const userEmail = user.email;
+            let webSettings = null;
+
+            // Step 4: Web App Integration & Subscription Check
+            if (userEmail) {
+                // Check subscription via web app first (critical)
+                const hasSubscription = await webapp.checkSubscription(userEmail);
+                if (hasSubscription === false) {
+                    console.log(`❌ User ${userId} has no active subscription. Blocking trade.`);
+                    return { success: false, error: 'Subscription expired. Please renew at nojai.com' };
+                }
+
+                // If subscription OK or API unreachable, try to get web settings
+                webSettings = await webapp.getUserSettings(userEmail);
+            }
+
+            console.log(`🔍 Step 5: Determining trade parameters for ${userId}`);
+            
+            // Determine account type from web app (if available), fallback to local
+            if (webSettings && webSettings.accountType) {
+                console.log(`🌐 Account Type from WebApp: ${webSettings.accountType}`);
+                client.accountType = webSettings.accountType;
+                client.refreshProfile(); // Refresh only once if changed
+            }
+
+            // Determine martingale status
+            let martingaleEnabled = user?.martingale_enabled !== false;
+            if (webSettings && webSettings.martingaleEnabled !== undefined) {
+                martingaleEnabled = webSettings.martingaleEnabled;
+                console.log(`🌐 Martingale from WebApp: ${martingaleEnabled}`);
+            }
 
             const currency = client?.currency || user?.currency || 'USD';
             const min = this.getCurrencyMin(currency);
@@ -175,15 +202,15 @@ class AutoTrader {
             let state = null;
 
             if (martingaleEnabled) {
-                // Use web settings trade amount as base if available
+                // Base amount: prioritize web settings
                 const baseAmount = (webSettings && webSettings.tradeAmount) ? webSettings.tradeAmount : this.getBaseAmount(user, currency);
-                if (webSettings && webSettings.tradeAmount) console.log(`🌐 Using web app trade amount as base: ${baseAmount}`);
+                if (webSettings && webSettings.tradeAmount) console.log(`🌐 Base Amount from WebApp: ${baseAmount}`);
                 
                 state = this.getMartingaleState(userId, user, currency);
                 
-                // Update state with new base if it changed
+                // Update state if base amount changed (from web app)
                 if (state.baseAmount !== baseAmount) {
-                    console.log(`🔄 Base amount changed from ${state.baseAmount} to ${baseAmount}. Updating state.`);
+                    console.log(`🔄 Base amount sync update: ${state.baseAmount} -> ${baseAmount}`);
                     state.baseAmount = baseAmount;
                     state.currentAmount = baseAmount * this.martingaleMultipliers[state.step];
                     this.activeTrades.set(userId, state);
@@ -197,12 +224,12 @@ class AutoTrader {
                 this.checkBalanceGrowth(userId, state, client.balance || 0);
                 tradeAmount = state.currentAmount;
             } else {
+                // Fixed amount: prioritize web settings
                 if (webSettings && webSettings.tradeAmount) {
                     tradeAmount = webSettings.tradeAmount;
-                    console.log(`🌐 Using web app trade amount: ${tradeAmount}`);
+                    console.log(`🌐 Fix Amount from WebApp: ${tradeAmount}`);
                 } else {
                     tradeAmount = user?.tradeAmount || min;
-                    console.log(`📁 Using local trade amount: ${tradeAmount}`);
                 }
             }
 
@@ -252,39 +279,27 @@ class AutoTrader {
     }
 
     trackTradeResult(userId, client, tradeInfo) {
-        const checkResult = (position) => {
-            if (position.external_id == tradeInfo.tradeId || position.id == tradeInfo.tradeId) {
-                if (position.status === 'closed') {
-                    client.ws?.removeListener('message', messageHandler);
-                    this.handleTradeResult(userId, position, tradeInfo);
-                }
-            }
-        };
-
-        const messageHandler = (data) => {
-            try {
-                const msg = JSON.parse(data);
-                if (msg.name === 'position-changed') {
-                    checkResult(msg.msg);
-                }
-            } catch (e) { }
-        };
-
-        client.ws?.on('message', messageHandler);
-
+        // CPU FIX: We no longer add raw 'message' listeners here.
+        // Instead, the IQOptionClient's handleMessage logic will trigger handleTradeResult 
+        // through the existing callback system.
+        
+        console.log(`📡 User ${userId}: Tracking trade ${tradeInfo.tradeId} via centralized callbacks.`);
+        
+        // Safety timeout to clear open position state if no result comes
         const durationMs = (tradeInfo.duration > 0) ? tradeInfo.duration * 60 * 1000 : 5 * 60 * 1000;
         setTimeout(() => {
-            client.ws?.removeListener('message', messageHandler);
-            console.log(`⏰ Trade ${tradeInfo.tradeId} timeout (waited ${durationMs / 60000} min)`);
-
-            if (this.openPositions.has(userId) && this.openPositions.get(userId) === tradeInfo.tradeId) {
+            if (this.openPositions.get(userId) === tradeInfo.tradeId) {
                 this.openPositions.delete(userId);
-                console.log(`🔓 User ${userId} open position cleared (timeout)`);
+                console.log(`⏰ User ${userId}: Trade ${tradeInfo.tradeId} cleared by safety timeout.`);
             }
-        }, durationMs + 30000);
+        }, durationMs + 60000); // 1-minute buffer
     }
 
     async handleTradeResult(userId, position, tradeInfo) {
+        // Ensure we are handling the correct trade
+        if (tradeInfo.tradeId && position.id && position.id !== tradeInfo.tradeId) {
+          return;
+        }
         try {
             const investment = position.invest || position.raw_event?.amount || tradeInfo.amount;
             const isWin = position.raw_event?.result === 'win' || position.close_reason === 'win';
