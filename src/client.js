@@ -180,6 +180,7 @@ class IQOptionClient {
         }
         if (this.ws) {
             this.ws.removeAllListeners();
+            this.ws.on('error', () => {}); // Catch late errors to prevent crash
             try { this.ws.close(); } catch (e) {}
             this.ws = null;
         }
@@ -483,6 +484,7 @@ class IQOptionClient {
         if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
         if (this.ws) {
             this.ws.removeAllListeners();
+            this.ws.on('error', () => {}); // Catch late errors
             try { this.ws.close(); } catch (e) {}
             this.ws = null;
         }
