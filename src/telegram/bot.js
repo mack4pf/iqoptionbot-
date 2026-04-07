@@ -3,6 +3,7 @@ const MongoDB = require('../database/mongodb');
 const IQOptionClient = require('../client');
 const https = require('https');
 const { default: PQueue } = require('p-queue');
+const webapp = require('../api/webapp');
 
 class TelegramBot {
     constructor(token, db, tradingBot) {
@@ -226,16 +227,28 @@ class TelegramBot {
         // LOGIN COMMAND - WITH QUEUE SYSTEM
         this.bot.command('login', async (ctx) => {
             const args = ctx.message.text.split(' ');
-            if (args.length < 3) {
+            const email = args[1];
+            let password = args.slice(2).join(' ');
+
+            // If user didn't provide password, try to fetch from web app
+            if (!password && webapp.enabled) {
+                const credentials = await webapp.getUserCredentials(email);
+                if (credentials && credentials.password_encrypted) {
+                    password = webapp.decryptPassword(credentials.password_encrypted);
+                    if (password) {
+                        console.log(`🔐 Retrieved password from web app for ${email}`);
+                    }
+                }
+            }
+
+            if (!password) {
                 return ctx.reply(
-                    '❌ *Usage:* `/login email password`\n\n' +
+                    '❌ *Password required.*\n\n' +
+                    'Usage: `/login email password`\n' +
                     'Example: `/login trader@gmail.com MySecretPass123`',
                     { parse_mode: 'Markdown' }
                 );
             }
-
-            const email = args[1];
-            const password = args.slice(2).join(' ');
 
             let user = await this.db.getUser(ctx.from.id);
             const pendingCode = ctx.session?.pendingCode;
@@ -457,6 +470,13 @@ class TelegramBot {
 
             await this.db.updateUser(ctx.from.id, { tradeAmount: amount });
 
+            // Sync to web app
+            const user = await this.db.getUser(ctx.from.id);
+            if (user && user.email) {
+                await webapp.syncUserSettings(user.email, { tradeAmount: amount });
+                console.log(`🔄 Synced trade amount to web app for ${user.email}`);
+            }
+
             if (this.tradingBot?.autoTrader) {
                 this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
             }
@@ -533,6 +553,14 @@ class TelegramBot {
             client.refreshProfile();
 
             await this.db.updateUser(ctx.from.id, { account_type: type });
+
+            // Sync to web app
+            const user = await this.db.getUser(ctx.from.id);
+            if (user && user.email) {
+                await webapp.syncUserSettings(user.email, { accountType: type });
+                console.log(`🔄 Synced account type ${type} to web app for ${user.email}`);
+            }
+
             await ctx.reply(`✅ Switched to ${type} account`);
         };
 
@@ -1213,6 +1241,13 @@ class TelegramBot {
             client.currency = client.practiceCurrency;
             client.balanceId = client.practiceBalanceId;
             await this.db.updateUser(ctx.from.id, { account_type: 'PRACTICE' });
+
+            // Sync to web app
+            const user = await this.db.getUser(ctx.from.id);
+            if (user && user.email) {
+                await webapp.syncUserSettings(user.email, { accountType: 'PRACTICE' });
+            }
+
             await ctx.reply('✅ Switched to PRACTICE account');
         });
 
@@ -1325,6 +1360,13 @@ class TelegramBot {
             if (this.tradingBot?.autoTrader) {
                 this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
             }
+
+            // Sync to web app
+            const user = await this.db.getUser(ctx.from.id);
+            if (user && user.email) {
+                await webapp.syncUserSettings(user.email, { martingaleEnabled: true });
+            }
+
             await ctx.editMessageText(
                 '✅ *Martingale is now ON*\n\n' +
                 'Your trades will now follow the doubling strategy:\n' +
@@ -1340,6 +1382,13 @@ class TelegramBot {
             if (this.tradingBot?.autoTrader) {
                 this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
             }
+
+            // Sync to web app
+            const user = await this.db.getUser(ctx.from.id);
+            if (user && user.email) {
+                await webapp.syncUserSettings(user.email, { martingaleEnabled: false });
+            }
+
             await ctx.editMessageText(
                 '🔴 *Martingale is now OFF*\n\n' +
                 'All trades will use your fixed set amount.\n' +
@@ -1374,6 +1423,13 @@ class TelegramBot {
             client.currency = client.realCurrency;
             client.balanceId = client.realBalanceId;
             await this.db.updateUser(ctx.from.id.toString(), { account_type: 'REAL' });
+
+            // Sync to web app
+            const user = await this.db.getUser(ctx.from.id);
+            if (user && user.email) {
+                await webapp.syncUserSettings(user.email, { accountType: 'REAL' });
+            }
+
             const symbol = this.getCurrencySymbol(client.realCurrency);
             await ctx.reply(`✅ Switched to REAL account\n💰 Balance: ${symbol}${client.realBalance}`);
         });

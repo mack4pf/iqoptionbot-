@@ -1,4 +1,5 @@
 const fs = require('fs');
+const webapp = require('../api/webapp');
 
 class AutoTrader {
     constructor(telegramBot, db) {
@@ -137,12 +138,14 @@ class AutoTrader {
 
     async executeTrade(userId, client, signal) {
         try {
+            console.log(`🔍 Step 1: Checking open position for ${userId}`);
             if (this.openPositions.has(userId)) {
                 const openTradeId = this.openPositions.get(userId);
                 console.log(`⏸️ User ${userId} has OPEN position (Trade ID: ${openTradeId}). IGNORING signal.`);
                 return { success: false, error: 'User has open position - trade blocked' };
             }
 
+            console.log(`🔍 Step 2: Checking cooldown for ${userId}`);
             if (this.lastTradeCloseTime.has(userId)) {
                 const timeSinceLastClose = Date.now() - this.lastTradeCloseTime.get(userId);
                 if (timeSinceLastClose < 10000) {
@@ -151,8 +154,19 @@ class AutoTrader {
                 }
             }
 
+            console.log(`🔍 Step 3: Checking connection status for ${userId}`);
+            console.log(`🔍 Connected: ${client?.connected}, ws readyState: ${client?.ws?.readyState}`);
+
+            // Point 4: Check if balanceId exists
+            if (!client.balanceId) {
+                console.log(`❌ User ${userId} has no balanceId, refreshing profile...`);
+                client.refreshProfile();
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+
             const user = await this.db.getUser(userId);
             const martingaleEnabled = user?.martingale_enabled !== false;
+            const webSettings = null; // Forced null for now
 
             const currency = client?.currency || user?.currency || 'USD';
             const min = this.getCurrencyMin(currency);
@@ -161,7 +175,19 @@ class AutoTrader {
             let state = null;
 
             if (martingaleEnabled) {
+                // Use web settings trade amount as base if available
+                const baseAmount = (webSettings && webSettings.tradeAmount) ? webSettings.tradeAmount : this.getBaseAmount(user, currency);
+                if (webSettings && webSettings.tradeAmount) console.log(`🌐 Using web app trade amount as base: ${baseAmount}`);
+                
                 state = this.getMartingaleState(userId, user, currency);
+                
+                // Update state with new base if it changed
+                if (state.baseAmount !== baseAmount) {
+                    console.log(`🔄 Base amount changed from ${state.baseAmount} to ${baseAmount}. Updating state.`);
+                    state.baseAmount = baseAmount;
+                    state.currentAmount = baseAmount * this.martingaleMultipliers[state.step];
+                    this.activeTrades.set(userId, state);
+                }
 
                 if (state.initialBalance === 0 && client.balance > 0) {
                     state.initialBalance = client.balance;
@@ -171,7 +197,13 @@ class AutoTrader {
                 this.checkBalanceGrowth(userId, state, client.balance || 0);
                 tradeAmount = state.currentAmount;
             } else {
-                tradeAmount = user?.tradeAmount || min;
+                if (webSettings && webSettings.tradeAmount) {
+                    tradeAmount = webSettings.tradeAmount;
+                    console.log(`🌐 Using web app trade amount: ${tradeAmount}`);
+                } else {
+                    tradeAmount = user?.tradeAmount || min;
+                    console.log(`📁 Using local trade amount: ${tradeAmount}`);
+                }
             }
 
             tradeAmount = this.validateAmount(tradeAmount, currency);

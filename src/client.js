@@ -175,9 +175,13 @@ class IQOptionClient {
             this.send({ name: 'ssid', msg: this.ssid });
 
             // Heartbeat
-            setInterval(() => {
-                if (this.ws?.readyState === WebSocket.OPEN) {
+            this.pingInterval = setInterval(() => {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.send({ name: 'heartbeat', msg: Date.now() });
+                } else {
+                    console.log(`⚠️ User ${this.chatId} WebSocket not open (state: ${this.ws?.readyState}), reconnecting...`);
+                    this.disconnect();
+                    this.connect();
                 }
             }, 30000);
 
