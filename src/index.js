@@ -114,7 +114,8 @@ class TradingBot {
             };
         }
 
-        this.adminClient.connect();
+        // The login() method already calls connect() internally.
+        // We do NOT need to call it again here.
         console.log('✅ Admin IQ Option connected and registered in bot\n');
     }
 

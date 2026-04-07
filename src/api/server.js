@@ -142,7 +142,7 @@ app.post('/api/admin/refresh-duration', async (req, res) => {
 // ❌ RESULT ENDPOINT REMOVED - TradingView results are ignored
 
 function startServer(port = 3000) {
-    app.listen(port, () => {
+    app.listen(port, '0.0.0.0', () => {
         console.log(`📡 Signal receiver API listening on port ${port}`);
     });
 }
