@@ -1,8 +1,21 @@
+require('dotenv').config();
+
+// Global error handlers for production stability
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('CRITICAL: Uncaught Exception:', err);
+    if (err.message && err.message.includes('ERR_REQUIRE_ESM')) {
+        console.error('FATAL: CommonJS/ESM incompatibility detected. Please check package versions.');
+    }
+});
+
 const TelegramBot = require('./telegram/bot');
 const MongoDB = require('./database/mongodb');
 const AutoTrader = require('./core/auto-trader');
 const apiServer = require('./api/server');
-require('dotenv').config();
 
 class TradingBot {
     constructor() {
