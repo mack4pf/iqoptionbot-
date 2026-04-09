@@ -6,8 +6,8 @@ class AutoTrader {
         this.telegramBot = telegramBot;
         this.db = db;
 
-        // Martingale step multipliers: 
-        this.martingaleMultipliers = [1, 1, 2, 4, 8,];
+        // Martingale step multipliers: 1x, 1x, 2x, 4x, 8x
+        this.martingaleMultipliers = [1, 1, 2, 4, 8];
         this.MAX_STEPS = 5;
 
         // In-memory state per user
@@ -57,21 +57,19 @@ class AutoTrader {
     }
 
     getMartingaleState(userId, user, currency) {
-        // FIRST: Check if we have fresh state in memory
-        const memoryState = this.activeTrades.get(userId);
-        if (memoryState && memoryState.currency === currency && memoryState.baseAmount === this.getBaseAmount(user, currency)) {
-            console.log(`📊 User ${userId}: Using memory state - losses=${memoryState.losses}, step=${memoryState.step}, amount=${memoryState.currentAmount}`);
-            return memoryState;
-        }
-
-        // Otherwise load from database
+        // Get base amount first
         const base = this.getBaseAmount(user, currency);
-        const db = user?.martingale || {};
 
-        // Get losses from database
-        let losses = db.loss_streak || 0;
+        // Get losses from database (source of truth)
+        const dbState = user?.martingale || {};
+        let losses = dbState.loss_streak || 0;
 
-        // Calculate step based on losses: step = losses (capped)
+        // Calculate step based on losses
+        // losses=0 -> step=0 (1x)
+        // losses=1 -> step=1 (1x)
+        // losses=2 -> step=2 (2x)
+        // losses=3 -> step=3 (4x)
+        // losses=4 -> step=4 (8x)
         let step = Math.min(losses, this.martingaleMultipliers.length - 1);
         let amount = base * this.martingaleMultipliers[step];
 
@@ -83,12 +81,13 @@ class AutoTrader {
             losses: losses,
             baseAmount: base,
             currentAmount: amount,
-            initialBalance: db.initial_balance || 0,
+            initialBalance: dbState.initial_balance || 0,
             currency: currency
         };
 
+        // Update memory state
         this.activeTrades.set(userId, state);
-        console.log(`📊 User ${userId}: DB loaded - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}`);
+        console.log(`📊 User ${userId}: Martingale state - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}, base=${state.baseAmount}`);
         return state;
     }
 
@@ -111,10 +110,10 @@ class AutoTrader {
         state.losses++;
 
         if (state.losses >= this.MAX_STEPS) {
-            console.log(`🔄 User ${userId}: 8 consecutive losses. Resetting martingale.`);
+            console.log(`🔄 User ${userId}: ${this.MAX_STEPS} consecutive losses. Resetting martingale.`);
             this.resetMartingale(userId, state);
         } else {
-            // CORRECT: next step = number of losses (capped)
+            // Calculate new step based on new loss count
             state.step = Math.min(state.losses, this.martingaleMultipliers.length - 1);
             const multiplier = this.martingaleMultipliers[state.step];
             let newAmount = state.baseAmount * multiplier;
@@ -126,7 +125,7 @@ class AutoTrader {
             }
             state.currentAmount = newAmount;
 
-            console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/8) - Multiplier: ${multiplier}x`);
+            console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/${this.MAX_STEPS}) - Multiplier: ${multiplier}x`);
             this.activeTrades.set(userId, state);
         }
     }
@@ -167,25 +166,26 @@ class AutoTrader {
             let webSettings = null;
 
             // Step 4: Web App Integration & Subscription Check
-            if (userEmail) {
-                // Check subscription via web app first (critical)
-                const hasSubscription = await webapp.checkSubscription(userEmail);
-                if (hasSubscription === false) {
-                    console.log(`❌ User ${userId} has no active subscription. Blocking trade.`);
-                    return { success: false, error: 'Subscription expired. Please renew at nojai.com' };
+            if (userEmail && webapp && webapp.enabled) {
+                try {
+                    const hasSubscription = await webapp.checkSubscription(userEmail);
+                    if (hasSubscription === false) {
+                        console.log(`❌ User ${userId} has no active subscription. Blocking trade.`);
+                        return { success: false, error: 'Subscription expired. Please renew at nojai.com' };
+                    }
+                    webSettings = await webapp.getUserSettings(userEmail);
+                } catch (err) {
+                    console.log(`⚠️ Web app API error for ${userId}, continuing with local settings:`, err.message);
                 }
-
-                // If subscription OK or API unreachable, try to get web settings
-                webSettings = await webapp.getUserSettings(userEmail);
             }
 
             console.log(`🔍 Step 5: Determining trade parameters for ${userId}`);
-            
+
             // Determine account type from web app (if available), fallback to local
             if (webSettings && webSettings.accountType) {
                 console.log(`🌐 Account Type from WebApp: ${webSettings.accountType}`);
                 client.accountType = webSettings.accountType;
-                client.refreshProfile(); // Refresh only once if changed
+                client.refreshProfile();
             }
 
             // Determine martingale status
@@ -203,15 +203,20 @@ class AutoTrader {
 
             if (martingaleEnabled) {
                 // Base amount: prioritize web settings
-                const baseAmount = (webSettings && webSettings.tradeAmount) ? webSettings.tradeAmount : this.getBaseAmount(user, currency);
-                if (webSettings && webSettings.tradeAmount) console.log(`🌐 Base Amount from WebApp: ${baseAmount}`);
-                
+                let baseAmount = this.getBaseAmount(user, currency);
+                if (webSettings && webSettings.tradeAmount) {
+                    baseAmount = webSettings.tradeAmount;
+                    console.log(`🌐 Base Amount from WebApp: ${baseAmount}`);
+                }
+
+                // Get current martingale state (always fresh from DB)
                 state = this.getMartingaleState(userId, user, currency);
-                
-                // Update state if base amount changed (from web app)
+
+                // Update base amount if changed
                 if (state.baseAmount !== baseAmount) {
                     console.log(`🔄 Base amount sync update: ${state.baseAmount} -> ${baseAmount}`);
                     state.baseAmount = baseAmount;
+                    // Recalculate amount based on current step
                     state.currentAmount = baseAmount * this.martingaleMultipliers[state.step];
                     this.activeTrades.set(userId, state);
                 }
@@ -223,6 +228,7 @@ class AutoTrader {
 
                 this.checkBalanceGrowth(userId, state, client.balance || 0);
                 tradeAmount = state.currentAmount;
+                console.log(`💰 Martingale amount for ${userId}: ${tradeAmount} (losses=${state.losses}, step=${state.step})`);
             } else {
                 // Fixed amount: prioritize web settings
                 if (webSettings && webSettings.tradeAmount) {
@@ -279,26 +285,20 @@ class AutoTrader {
     }
 
     trackTradeResult(userId, client, tradeInfo) {
-        // CPU FIX: We no longer add raw 'message' listeners here.
-        // Instead, the IQOptionClient's handleMessage logic will trigger handleTradeResult 
-        // through the existing callback system.
-        
         console.log(`📡 User ${userId}: Tracking trade ${tradeInfo.tradeId} via centralized callbacks.`);
-        
-        // Safety timeout to clear open position state if no result comes
+
         const durationMs = (tradeInfo.duration > 0) ? tradeInfo.duration * 60 * 1000 : 5 * 60 * 1000;
         setTimeout(() => {
             if (this.openPositions.get(userId) === tradeInfo.tradeId) {
                 this.openPositions.delete(userId);
                 console.log(`⏰ User ${userId}: Trade ${tradeInfo.tradeId} cleared by safety timeout.`);
             }
-        }, durationMs + 60000); // 1-minute buffer
+        }, durationMs + 60000);
     }
 
     async handleTradeResult(userId, position, tradeInfo) {
-        // Ensure we are handling the correct trade
         if (tradeInfo.tradeId && position.id && position.id !== tradeInfo.tradeId) {
-          return;
+            return;
         }
         try {
             const investment = position.invest || position.raw_event?.amount || tradeInfo.amount;
@@ -336,11 +336,12 @@ class AutoTrader {
                     console.log(`✅ User ${userId} WIN ${currencySymbol}${profit.toFixed(2)}. Resetting martingale to base ${currencySymbol}${state.baseAmount}`);
                     this.resetMartingale(userId, state);
                 } else {
+                    console.log(`❌ User ${userId} LOSS. Advancing martingale...`);
                     this.advanceMartingale(userId, state);
                 }
             }
 
-            // Update database - AWAIT to ensure completion
+            // Update database
             if (user) {
                 const stats = user.stats || { total_trades: 0, wins: 0, losses: 0, total_profit: 0 };
                 stats.total_trades++;
@@ -371,7 +372,7 @@ class AutoTrader {
                 const stepDisplay = martingaleEnabled
                     ? (isWin
                         ? `↩️ Reset to ${currencySymbol}${state.currentAmount}`
-                        : `📉 Loss ${state.losses}/8 → Next: ${currencySymbol}${state.currentAmount}`)
+                        : `📉 Loss ${state.losses}/${this.MAX_STEPS} → Next: ${currencySymbol}${state.currentAmount}`)
                     : `🔴 Martingale OFF`;
 
                 const message = `
@@ -416,7 +417,7 @@ ${emoji} *AUTO-TRADE SIGNAL*
 👥 Executing for: ${userCount} users
 🕐 Time: ${new Date().toLocaleTimeString()}
 ━━━━━━━━━━━━━━━
-🤖 Martingale active • Max 8 steps • Auto-reset
+🤖 Martingale active • Max ${this.MAX_STEPS} steps • Auto-reset
         `;
     }
 

@@ -9,7 +9,7 @@ process.on('uncaughtException', (err) => {
     console.error('CRITICAL: Uncaught Exception:', err);
     if (err.message && err.message.includes('ERR_REQUIRE_ESM')) {
         console.error('FATAL: CommonJS/ESM incompatibility detected. Please check package versions.');
-    }
+    } a
 });
 
 const TelegramBot = require('./telegram/bot');
@@ -29,7 +29,7 @@ class TradingBot {
 
         // CPU FIX: Add a queue to limit simultaneous trade executions across all users.
         const { default: PQueue } = require('p-queue');
-        this.tradeQueue = new PQueue({ concurrency: 20 }); 
+        this.tradeQueue = new PQueue({ concurrency: 20 });
     }
 
     async initialize() {
