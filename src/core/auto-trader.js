@@ -6,20 +6,20 @@ class AutoTrader {
         this.telegramBot = telegramBot;
         this.db = db;
 
-        // Martingale step multipliers: 1x, 1x, 2x, 4x, 8x
+        // Hardcoded martingale multipliers: 1x, 1x, 2x, 4x, 8x (5 steps)
         this.martingaleMultipliers = [1, 1, 2, 4, 8];
         this.MAX_STEPS = 5;
 
-        // In-memory state per user
+        // In-memory state per user (primary source of truth)
         this.activeTrades = new Map();
 
         // Track open positions per user
-        this.openPositions = new Map(); // userId -> tradeId
+        this.openPositions = new Map();
 
-        // Track last trade close time per user (for cooldown)
-        this.lastTradeCloseTime = new Map(); // userId -> timestamp
+        // Track last trade close time per user (cooldown)
+        this.lastTradeCloseTime = new Map();
 
-        // Minimum AND MAXIMUM trade amounts per currency
+        // Currency limits
         this.currencyLimits = {
             NGN: { min: 1500, max: 50000000 },
             USD: { min: 1, max: 10000000 },
@@ -44,7 +44,6 @@ class AutoTrader {
     validateAmount(amount, currency) {
         const min = this.getCurrencyMin(currency);
         const max = this.getCurrencyMax(currency);
-
         if (amount < min) return min;
         if (amount > max) return max;
         return amount;
@@ -56,27 +55,25 @@ class AutoTrader {
         return this.validateAmount(userSet || min, currency);
     }
 
+    // Get martingale state – always use memory first, DB only as fallback
     getMartingaleState(userId, user, currency) {
-        // Get base amount first
-        const base = this.getBaseAmount(user, currency);
+        // Check memory first
+        let state = this.activeTrades.get(userId);
+        if (state && state.currency === currency) {
+            console.log(`📊 User ${userId}: Using memory state - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}`);
+            return state;
+        }
 
-        // Get losses from database (source of truth)
+        // Fallback to DB (should not happen if state is properly maintained)
+        const base = this.getBaseAmount(user, currency);
         const dbState = user?.martingale || {};
         let losses = dbState.loss_streak || 0;
-
-        // Calculate step based on losses
-        // losses=0 -> step=0 (1x)
-        // losses=1 -> step=1 (1x)
-        // losses=2 -> step=2 (2x)
-        // losses=3 -> step=3 (4x)
-        // losses=4 -> step=4 (8x)
         let step = Math.min(losses, this.martingaleMultipliers.length - 1);
         let amount = base * this.martingaleMultipliers[step];
-
         const max = this.getCurrencyMax(currency);
         if (amount > max) amount = max;
 
-        const state = {
+        state = {
             step: step,
             losses: losses,
             baseAmount: base,
@@ -84,67 +81,57 @@ class AutoTrader {
             initialBalance: dbState.initial_balance || 0,
             currency: currency
         };
-
-        // Update memory state
         this.activeTrades.set(userId, state);
-        console.log(`📊 User ${userId}: Martingale state - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}, base=${state.baseAmount}`);
+        console.log(`📊 User ${userId}: DB fallback state - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}`);
         return state;
     }
 
     resetMartingale(userId, state) {
         console.log(`🔄 Resetting martingale for user ${userId}`);
         console.log(`   BEFORE: step=${state.step}, losses=${state.losses}, amount=${state.currentAmount}`);
-
         state.step = 0;
         state.losses = 0;
         state.currentAmount = state.baseAmount;
-
         console.log(`   AFTER: step=${state.step}, losses=${state.losses}, amount=${state.currentAmount}`);
         this.activeTrades.set(userId, state);
+        return state;
     }
 
     advanceMartingale(userId, state) {
         console.log(`📊 User ${userId} BEFORE advance: step=${state.step}, losses=${state.losses}, amount=${state.currentAmount}`);
-
-        // Increase loss counter
         state.losses++;
+        console.log(`📈 User ${userId} loss count increased to ${state.losses}`);
 
         if (state.losses >= this.MAX_STEPS) {
             console.log(`🔄 User ${userId}: ${this.MAX_STEPS} consecutive losses. Resetting martingale.`);
             this.resetMartingale(userId, state);
         } else {
-            // Calculate new step based on new loss count
-            state.step = Math.min(state.losses, this.martingaleMultipliers.length - 1);
-            const multiplier = this.martingaleMultipliers[state.step];
+            const newStep = Math.min(state.losses, this.martingaleMultipliers.length - 1);
+            const multiplier = this.martingaleMultipliers[newStep];
             let newAmount = state.baseAmount * multiplier;
-
             const max = this.getCurrencyMax(state.currency);
-            if (newAmount > max) {
-                console.log(`⚠️ User ${userId}: Martingale would exceed max amount. Capping at ${max}`);
-                newAmount = max;
-            }
-            state.currentAmount = newAmount;
+            if (newAmount > max) newAmount = max;
 
-            console.log(`📉 User ${userId} loss streak: ${state.losses} | Next: ${state.currentAmount} (Step ${state.step + 1}/${this.MAX_STEPS}) - Multiplier: ${multiplier}x`);
+            console.log(`📈 User ${userId}: loss streak=${state.losses} → step=${newStep}, multiplier=${multiplier}x, next amount=${newAmount}`);
+            state.step = newStep;
+            state.currentAmount = newAmount;
             this.activeTrades.set(userId, state);
         }
+        return state;
     }
 
     checkBalanceGrowth(userId, state, currentBalance) {
-        // COMPLETELY DISABLED - No auto-balance changes
-        return false;
+        return false; // disabled
     }
 
     async executeTrade(userId, client, signal) {
         try {
-            console.log(`🔍 Step 1: Checking open position for ${userId}`);
             if (this.openPositions.has(userId)) {
                 const openTradeId = this.openPositions.get(userId);
                 console.log(`⏸️ User ${userId} has OPEN position (Trade ID: ${openTradeId}). IGNORING signal.`);
                 return { success: false, error: 'User has open position - trade blocked' };
             }
 
-            console.log(`🔍 Step 2: Checking cooldown for ${userId}`);
             if (this.lastTradeCloseTime.has(userId)) {
                 const timeSinceLastClose = Date.now() - this.lastTradeCloseTime.get(userId);
                 if (timeSinceLastClose < 10000) {
@@ -153,19 +140,17 @@ class AutoTrader {
                 }
             }
 
-            // Step 3: Check connection & profile readiness
             if (!client.balanceId) {
                 console.log(`❌ User ${userId} has no balanceId, refreshing profile...`);
                 client.refreshProfile();
             }
 
             const user = await this.db.getUser(userId);
-            if (!user) return { success: false, error: 'User not found in database' };
+            if (!user) return { success: false, error: 'User not found' };
 
             const userEmail = user.email;
             let webSettings = null;
 
-            // Step 4: Web App Integration & Subscription Check
             if (userEmail && webapp && webapp.enabled) {
                 try {
                     const hasSubscription = await webapp.checkSubscription(userEmail);
@@ -179,16 +164,6 @@ class AutoTrader {
                 }
             }
 
-            console.log(`🔍 Step 5: Determining trade parameters for ${userId}`);
-
-            // Determine account type from web app (if available), fallback to local
-            if (webSettings && webSettings.accountType) {
-                console.log(`🌐 Account Type from WebApp: ${webSettings.accountType}`);
-                client.accountType = webSettings.accountType;
-                client.refreshProfile();
-            }
-
-            // Determine martingale status
             let martingaleEnabled = user?.martingale_enabled !== false;
             if (webSettings && webSettings.martingaleEnabled !== undefined) {
                 martingaleEnabled = webSettings.martingaleEnabled;
@@ -202,21 +177,17 @@ class AutoTrader {
             let state = null;
 
             if (martingaleEnabled) {
-                // Base amount: prioritize web settings
                 let baseAmount = this.getBaseAmount(user, currency);
                 if (webSettings && webSettings.tradeAmount) {
                     baseAmount = webSettings.tradeAmount;
                     console.log(`🌐 Base Amount from WebApp: ${baseAmount}`);
                 }
 
-                // Get current martingale state (always fresh from DB)
                 state = this.getMartingaleState(userId, user, currency);
 
-                // Update base amount if changed
                 if (state.baseAmount !== baseAmount) {
-                    console.log(`🔄 Base amount sync update: ${state.baseAmount} -> ${baseAmount}`);
+                    console.log(`🔄 Base amount sync: ${state.baseAmount} -> ${baseAmount}`);
                     state.baseAmount = baseAmount;
-                    // Recalculate amount based on current step
                     state.currentAmount = baseAmount * this.martingaleMultipliers[state.step];
                     this.activeTrades.set(userId, state);
                 }
@@ -226,26 +197,16 @@ class AutoTrader {
                     this.activeTrades.set(userId, state);
                 }
 
-                this.checkBalanceGrowth(userId, state, client.balance || 0);
                 tradeAmount = state.currentAmount;
                 console.log(`💰 Martingale amount for ${userId}: ${tradeAmount} (losses=${state.losses}, step=${state.step})`);
             } else {
-                // Fixed amount: prioritize web settings
-                if (webSettings && webSettings.tradeAmount) {
-                    tradeAmount = webSettings.tradeAmount;
-                    console.log(`🌐 Fix Amount from WebApp: ${tradeAmount}`);
-                } else {
-                    tradeAmount = user?.tradeAmount || min;
-                }
+                tradeAmount = webSettings?.tradeAmount || user?.tradeAmount || min;
             }
 
             tradeAmount = this.validateAmount(tradeAmount, currency);
 
             if (client.balance < tradeAmount) {
-                return {
-                    success: false,
-                    error: `Insufficient balance. Need ${currency} ${tradeAmount.toLocaleString()}, have ${currency} ${client.balance.toLocaleString()}`
-                };
+                return { success: false, error: `Insufficient balance. Need ${currency} ${tradeAmount.toLocaleString()}, have ${currency} ${client.balance.toLocaleString()}` };
             }
 
             console.log(`💰 Placing ${signal.direction} trade for user ${userId} — ${currency}${tradeAmount} [Martingale: ${martingaleEnabled ? 'ON' : 'OFF'}]`);
@@ -277,7 +238,6 @@ class AutoTrader {
 
             this.trackTradeResult(userId, client, tradeInfo);
             return { success: true, tradeId: result.tradeId, amount: tradeAmount };
-
         } catch (error) {
             console.error(`Trade execution error for user ${userId}:`, error);
             return { success: false, error: error.message };
@@ -285,8 +245,7 @@ class AutoTrader {
     }
 
     trackTradeResult(userId, client, tradeInfo) {
-        console.log(`📡 User ${userId}: Tracking trade ${tradeInfo.tradeId} via centralized callbacks.`);
-
+        console.log(`📡 User ${userId}: Tracking trade ${tradeInfo.tradeId}`);
         const durationMs = (tradeInfo.duration > 0) ? tradeInfo.duration * 60 * 1000 : 5 * 60 * 1000;
         setTimeout(() => {
             if (this.openPositions.get(userId) === tradeInfo.tradeId) {
@@ -297,13 +256,10 @@ class AutoTrader {
     }
 
     async handleTradeResult(userId, position, tradeInfo) {
-        if (tradeInfo.tradeId && position.id && position.id !== tradeInfo.tradeId) {
-            return;
-        }
+        if (tradeInfo.tradeId && position.id && position.id !== tradeInfo.tradeId) return;
         try {
             const investment = position.invest || position.raw_event?.amount || tradeInfo.amount;
             const isWin = position.raw_event?.result === 'win' || position.close_reason === 'win';
-
             let profit = 0;
             if (isWin) {
                 const totalPayout = position.close_profit || position.raw_event?.profit_amount || 0;
@@ -312,15 +268,10 @@ class AutoTrader {
 
             const user = await this.db.getUser(userId);
             const martingaleEnabled = user?.martingale_enabled !== false;
-
             const currency = tradeInfo.currency || position.currency || 'USD';
             const currencySymbol = this.getCurrencySymbol(currency);
 
-            if (this.openPositions.has(userId)) {
-                this.openPositions.delete(userId);
-                console.log(`🔓 User ${userId} open position cleared (trade closed)`);
-            }
-
+            this.openPositions.delete(userId);
             this.lastTradeCloseTime.set(userId, Date.now());
             console.log(`⏱️ User ${userId} cooldown started - 10 seconds`);
 
@@ -330,18 +281,16 @@ class AutoTrader {
                 state = { step: 0, losses: 0, baseAmount: base, currentAmount: base, initialBalance: 0, currency };
             }
 
-            // Update martingale based on result
             if (martingaleEnabled) {
                 if (isWin) {
-                    console.log(`✅ User ${userId} WIN ${currencySymbol}${profit.toFixed(2)}. Resetting martingale to base ${currencySymbol}${state.baseAmount}`);
+                    console.log(`✅ User ${userId} WIN ${currencySymbol}${profit.toFixed(2)}. Resetting martingale.`);
                     this.resetMartingale(userId, state);
                 } else {
-                    console.log(`❌ User ${userId} LOSS. Advancing martingale...`);
+                    console.log(`❌ User ${userId} LOSS. Advancing martingale.`);
                     this.advanceMartingale(userId, state);
                 }
             }
 
-            // Update database
             if (user) {
                 const stats = user.stats || { total_trades: 0, wins: 0, losses: 0, total_profit: 0 };
                 stats.total_trades++;
@@ -363,11 +312,9 @@ class AutoTrader {
                         initial_balance: state.initialBalance
                     }
                 });
-
-                console.log(`📝 User ${userId}: Database saved - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}`);
+                console.log(`📝 User ${userId}: DB updated - losses=${state.losses}, step=${state.step}, amount=${state.currentAmount}`);
             }
 
-            // Send notifications
             if (user && this.telegramBot) {
                 const stepDisplay = martingaleEnabled
                     ? (isWin
@@ -386,9 +333,7 @@ ${stepDisplay}
 
                 try {
                     await this.telegramBot.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
-                } catch (e) {
-                    console.error(`Failed to notify user ${userId}:`, e.message);
-                }
+                } catch (e) { console.error(`Failed to notify user ${userId}:`, e.message); }
 
                 const adminId = process.env.ADMIN_CHAT_ID;
                 if (adminId) {
@@ -398,7 +343,6 @@ ${stepDisplay}
                     } catch (e) { }
                 }
             }
-
         } catch (error) {
             console.error('Error handling trade result:', error);
         }
@@ -407,7 +351,6 @@ ${stepDisplay}
     formatSignalMessage(signal, userCount) {
         const emoji = signal.direction === 'call' ? '🟢' : '🔴';
         const direction = signal.direction === 'call' ? 'BUY' : 'SELL';
-
         return `
 ${emoji} *AUTO-TRADE SIGNAL*
 ━━━━━━━━━━━━━━━
