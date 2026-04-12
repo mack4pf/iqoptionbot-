@@ -1,16 +1,6 @@
 const fs = require('fs');
 
-// Safe import of webapp (may not exist in Pro bot)
-let webapp;
-try {
-    webapp = require('../api/webapp');
-    if (!webapp || typeof webapp.checkSubscription !== 'function') {
-        webapp = null;
-    }
-} catch (e) {
-    webapp = null;
-    console.log('⚠️ Webapp module not available, continuing without it.');
-}
+const { checkSubscription } = require('../utils/webapp');
 
 class AutoTrader {
     constructor(telegramBot, db) {
@@ -135,16 +125,20 @@ class AutoTrader {
             const user = await this.db.getUser(userId);
             if (!user) return { success: false, error: 'User not found' };
 
-            let webSettings = null;
-            if (webapp && user.email) {
+            // NOJAI Webapp Subscription Check
+            if (user.email) {
                 try {
-                    const hasSubscription = await webapp.checkSubscription(user.email);
-                    if (hasSubscription === false) {
-                        console.log(`❌ User ${userId} subscription expired.`);
-                        return { success: false, error: 'Subscription expired' };
+                    const subStatus = await checkSubscription(user.email);
+                    if (!subStatus || !subStatus.valid) {
+                        console.log(`⛔ Subscription invalid/expired for ${user.email}. Skipping trade.`);
+                        return { success: false, error: 'Subscription invalid' };
                     }
-                    webSettings = await webapp.getUserSettings(user.email);
-                } catch (err) { console.log('Webapp error:', err.message); }
+                    // Optional: fetch user credentials/settings if needed here, 
+                    // though getCredentials is usually for login.
+                } catch (err) {
+                    console.error('Subscription check failed, assuming invalid:', err.message);
+                    return { success: false, error: 'Subscription check failed' };
+                }
             }
 
             let martingaleEnabled = user.martingale_enabled !== false;

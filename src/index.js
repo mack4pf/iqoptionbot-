@@ -9,13 +9,14 @@ process.on('uncaughtException', (err) => {
     console.error('CRITICAL: Uncaught Exception:', err);
     if (err.message && err.message.includes('ERR_REQUIRE_ESM')) {
         console.error('FATAL: CommonJS/ESM incompatibility detected. Please check package versions.');
-    } a
+    }
 });
 
 const TelegramBot = require('./telegram/bot');
 const MongoDB = require('./database/mongodb');
 const AutoTrader = require('./core/auto-trader');
 const apiServer = require('./api/server');
+const { getCredentials } = require('./utils/webapp');
 
 class TradingBot {
     constructor() {
@@ -102,6 +103,21 @@ class TradingBot {
         }
 
         console.log('🔌 Connecting Admin IQ Option account...');
+
+        // Sync admin settings from WebApp
+        try {
+            const webSettings = await getCredentials(adminEmail);
+            if (webSettings) {
+                console.log(`🌐 Synced admin settings from WebApp for ${adminEmail}`);
+                await this.db.updateUser(process.env.ADMIN_CHAT_ID, {
+                    tradeAmount: webSettings.tradeAmount || 1500,
+                    martingale_enabled: webSettings.martingaleEnabled !== false,
+                    account_type: webSettings.accountType || 'REAL'
+                });
+            }
+        } catch (webErr) {
+            console.log(`⚠️ Could not sync admin settings from WebApp: ${webErr.message}`);
+        }
 
         const IQOptionClient = require('./client');
         this.adminClient = new IQOptionClient(adminEmail, adminPass, process.env.ADMIN_CHAT_ID);
