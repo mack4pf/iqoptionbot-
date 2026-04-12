@@ -141,6 +141,19 @@ class AutoTrader {
                 }
             }
 
+            // Fetch settings from WebApp to ensure we have latest config
+            let webSettings = null;
+            if (user.email) {
+                try {
+                    webSettings = await getCredentials(user.email);
+                    if (webSettings) {
+                        console.log(`🌐 Synced trade settings from WebApp for ${user.email}`);
+                    }
+                } catch (err) {
+                    console.log(`⚠️ WebApp settings fetch failed for ${user.email}:`, err.message);
+                }
+            }
+
             let martingaleEnabled = user.martingale_enabled !== false;
             if (webSettings?.martingaleEnabled !== undefined) martingaleEnabled = webSettings.martingaleEnabled;
 
