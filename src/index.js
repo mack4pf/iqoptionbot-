@@ -60,7 +60,7 @@ class TradingBot {
         // START API SERVER
         console.log('📡 Starting Signal Receiver API...');
         apiServer.setTradingBot(this);
-        const apiPort = process.env.API_PORT;
+        const apiPort = process.env.PORT || process.env.API_PORT || 3000;
         apiServer.startServer(apiPort);
         console.log(`✅ Signal Receiver API listening on port ${apiPort}\n`);
 

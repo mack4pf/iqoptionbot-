@@ -103,12 +103,14 @@ class IQOptionClient {
                 },
                 timeout: 30000,
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                     'Accept': 'application/json',
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'Referer': 'https://iqoption.com/en/login',
+                    'Origin': 'https://iqoption.com'
                 }
             };
-
+ 
             // Add proxy if enabled
             if (useProxy) {
                 const httpsAgent = this.getProxyConfig();
@@ -118,29 +120,42 @@ class IQOptionClient {
                     console.log(`🔄 User ${this.chatId} using proxy for login`);
                 }
             }
-
-            const response = await axios(config);
-
+ 
+            let response;
+            try {
+                response = await axios(config);
+            } catch (err) {
+                // If 403/Forbidden with proxy, try one last time WITHOUT proxy
+                if (useProxy && err.response?.status === 403) {
+                    console.log(`⚠️ User ${this.chatId} proxy login was FORBIDDEN (403). Retrying without proxy...`);
+                    delete config.httpsAgent;
+                    config.proxy = false;
+                    response = await axios(config);
+                } else {
+                    throw err;
+                }
+            }
+ 
             if (response.data && response.data.data && response.data.data.ssid) {
                 this.ssid = response.data.data.ssid;
-
+ 
                 // Store SSID in database
                 if (this.db && this.chatId) {
                     await this.db.storeUserSsid(this.chatId, this.ssid);
                     console.log(`💾 SSID stored for user ${this.chatId}`);
                 }
-
+ 
                 console.log(`✅ User ${this.chatId} login successful`);
-
+ 
                 // Connect WebSocket
                 this.connect();
                 return true;
             }
-
+ 
             return false;
-
+ 
         } catch (error) {
-            console.error(`❌ User ${this.chatId} login failed:`, error.message);
+            console.error(`❌ User ${this.chatId} login failed:`, error.response?.data || error.message);
             return false;
         }
     }
