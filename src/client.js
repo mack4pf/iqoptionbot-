@@ -83,6 +83,8 @@ class IQOptionClient {
                 proxyAuth: `${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}`
             }
         });
+    }
+
     getWsProxyConfig() {
         if (!process.env.IPROYAL_HOST) return null;
         const proxyUrl = `http://${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}@${process.env.IPROYAL_HOST}:${process.env.IPROYAL_PORT}`;
