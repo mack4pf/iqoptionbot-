@@ -149,10 +149,10 @@ class IQOptionClient {
                 this.ssid = response.data.data.ssid;
 
                 // Store SSID in database
-                if (this.db && this.chatId) {
-                    await this.db.storeUserSsid(this.chatId, this.ssid);
-                    console.log(`💾 SSID stored for user ${this.chatId}`);
-                }
+                // if (this.db && this.chatId) {
+                //     await this.db.storeUserSsid(this.chatId, this.ssid);
+                //     console.log(`💾 SSID stored for user ${this.chatId}`);
+                // }
 
                 console.log(`✅ User ${this.chatId} login successful`);
 
