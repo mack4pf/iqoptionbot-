@@ -3,7 +3,6 @@ const MongoDB = require('../database/mongodb');
 const IQOptionClient = require('../client');
 const https = require('https');
 const { default: PQueue } = require('p-queue');
-const { getCredentials, updateSettings } = require('../utils/webapp');
 
 class TelegramBot {
     constructor(token, db, tradingBot) {
@@ -169,28 +168,12 @@ class TelegramBot {
 
             try {
                 const existingUser = await this.db.getUser(ctx.from.id);
-                
+
                 // If user exists, check if they are trying to extend access
                 if (existingUser) {
                     const hasAccess = await this.db.hasValidAccess(ctx.from.id);
                     if (hasAccess) {
-                        // Sync settings on start if user exists and has email
-                        if (existingUser.email) {
-                            try {
-                                const webSettings = await getCredentials(existingUser.email);
-                                if (webSettings) {
-                                    const { tradeAmount, martingaleEnabled, accountType } = webSettings;
-                                    await this.db.updateUser(ctx.from.id, {
-                                        tradeAmount: tradeAmount || existingUser.tradeAmount,
-                                        martingale_enabled: martingaleEnabled !== undefined ? martingaleEnabled : existingUser.martingale_enabled,
-                                        account_type: accountType || existingUser.account_type
-                                    });
-                                    console.log(`🔄 Synced settings from web for ${existingUser.email} on /start`);
-                                }
-                            } catch (err) {
-                                console.log(`⚠️ Failed to sync web settings on /start for ${existingUser.email}:`, err.message);
-                            }
-                        }
+
                         return ctx.reply(
                             '✅ You are already registered and your access is active!',
                             existingUser.is_admin ? this.adminMainMenu : this.userMainMenu
@@ -247,20 +230,7 @@ class TelegramBot {
             const email = args[1];
             let password = args.slice(2).join(' ');
 
-            // If user didn't provide password, try to fetch from web app
-            if (!password) {
-                try {
-                    const credentials = await getCredentials(email);
-                    if (credentials && credentials.password_encrypted) {
-                        password = this.db.decrypt(credentials.password_encrypted);
-                        if (password) {
-                            console.log(`🔐 Retrieved password from web app for ${email}`);
-                        }
-                    }
-                } catch (err) {
-                    console.log(`⚠️ Failed to fetch web credentials for ${email}:`, err.message);
-                }
-            }
+
 
             if (!password) {
                 return ctx.reply(
@@ -292,28 +262,7 @@ class TelegramBot {
                     }
 
                     if (!user && pendingCode) {
-                        try {
-                            // Fetch initial settings from web if available
-                            let initialSettings = {};
-                            try {
-                                const webSettings = await getCredentials(email);
-                                if (webSettings) {
-                                    initialSettings = {
-                                        tradeAmount: webSettings.tradeAmount,
-                                        martingale_enabled: webSettings.martingaleEnabled,
-                                        account_type: webSettings.accountType
-                                    };
-                                }
-                            } catch (e) { }
 
-                            await this.db.registerUserWithCode(ctx.from.id, email, password, pendingCode);
-                            
-                            // Apply web settings if any
-                            if (Object.keys(initialSettings).length > 0) {
-                                await this.db.updateUser(ctx.from.id, initialSettings);
-                            }
-                            
-                            user = await this.db.getUser(ctx.from.id);
                             ctx.session.pendingCode = null;
                         } catch (regError) {
                             await ctx.deleteMessage(statusMsg.message_id).catch(() => { });
@@ -333,12 +282,7 @@ class TelegramBot {
 
                     iqClient.onBalanceChanged = ({ amount, currency, accountType }) => {
                         this.db.updateUser(ctx.from.id, { balance: amount, currency, connected: true });
-                        // Sync to webapp
-                        if (email) {
-                            updateSettings(email.toLowerCase(), { balance: amount, currency, accountType }).catch(err =>
-                                console.log(`⚠️ WebApp balance sync failed for ${email}:`, err.message)
-                            );
-                        }
+
                     };
 
                     this.userConnections.set(ctx.from.id, iqClient);
@@ -437,7 +381,7 @@ class TelegramBot {
             const tradeSymbol = this.getCurrencySymbol(ctx.state.user.currency || 'NGN');
 
             let message = `📊 *Connection Status*\n\n`;
-            
+
             if (connected) {
                 message += `🔌 IQ Option: ✅ Connected\n`;
             } else if (hasSsid) {
@@ -516,16 +460,7 @@ class TelegramBot {
 
             await this.db.updateUser(ctx.from.id, { tradeAmount: amount });
 
-            // Sync to web app
-            const user = await this.db.getUser(ctx.from.id);
-            if (user && user.email) {
-                try {
-                    await updateSettings(user.email, { tradeAmount: amount });
-                    console.log(`🔄 Synced trade amount to web app for ${user.email}`);
-                } catch (err) {
-                    console.log(`⚠️ Failed to sync trade amount to web for ${user.email}:`, err.message);
-                }
-            }
+
 
             if (this.tradingBot?.autoTrader) {
                 this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
@@ -604,16 +539,7 @@ class TelegramBot {
 
             await this.db.updateUser(ctx.from.id, { account_type: type });
 
-            // Sync to web app
-            const user = await this.db.getUser(ctx.from.id);
-            if (user && user.email) {
-                try {
-                    await updateSettings(user.email, { accountType: type });
-                    console.log(`🔄 Synced account type ${type} to web app for ${user.email}`);
-                } catch (err) {
-                    console.log(`⚠️ Failed to sync account type to web for ${user.email}:`, err.message);
-                }
-            }
+
 
             await ctx.reply(`✅ Switched to ${type} account`);
         };
@@ -1020,11 +946,11 @@ class TelegramBot {
             }
 
             const statusMsg = await ctx.reply(`⏳ Sending broadcast to all users...`);
-            
+
             try {
                 const users = await this.db.getAllUsers();
                 const activeUsers = users.filter(u => !u.is_admin);
-                
+
                 let successCount = 0;
                 let failCount = 0;
 
@@ -1296,11 +1222,7 @@ class TelegramBot {
             client.balanceId = client.practiceBalanceId;
             await this.db.updateUser(ctx.from.id, { account_type: 'PRACTICE' });
 
-            // Sync to web app
-            const user = await this.db.getUser(ctx.from.id);
-            if (user && user.email) {
-                await webapp.syncUserSettings(user.email, { accountType: 'PRACTICE' });
-            }
+
 
             await ctx.reply('✅ Switched to PRACTICE account');
         });
@@ -1415,15 +1337,7 @@ class TelegramBot {
                 this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
             }
 
-            // Sync to web app
-            const user = await this.db.getUser(ctx.from.id);
-            if (user && user.email) {
-                try {
-                    await updateSettings(user.email, { martingaleEnabled: true });
-                } catch (err) {
-                    console.log(`⚠️ Failed to sync martingale status to web for ${user.email}:`, err.message);
-                }
-            }
+
 
             await ctx.editMessageText(
                 '✅ *Martingale is now ON*\n\n' +
@@ -1441,15 +1355,7 @@ class TelegramBot {
                 this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
             }
 
-            // Sync to web app
-            const user = await this.db.getUser(ctx.from.id);
-            if (user && user.email) {
-                try {
-                    await updateSettings(user.email, { martingaleEnabled: false });
-                } catch (err) {
-                    console.log(`⚠️ Failed to sync martingale status to web for ${user.email}:`, err.message);
-                }
-            }
+
 
             await ctx.editMessageText(
                 '🔴 *Martingale is now OFF*\n\n' +
@@ -1486,15 +1392,7 @@ class TelegramBot {
             client.balanceId = client.realBalanceId;
             await this.db.updateUser(ctx.from.id.toString(), { account_type: 'REAL' });
 
-            // Sync to web app
-            const user = await this.db.getUser(ctx.from.id);
-            if (user && user.email) {
-                try {
-                    await updateSettings(user.email, { accountType: 'REAL' });
-                } catch (err) {
-                    console.log(`⚠️ Failed to sync account type to web for ${user.email}:`, err.message);
-                }
-            }
+
 
             const symbol = this.getCurrencySymbol(client.realCurrency);
             await ctx.reply(`✅ Switched to REAL account\n💰 Balance: ${symbol}${client.realBalance}`);
@@ -1714,41 +1612,21 @@ ${resultEmoji} ${resultText}
             if (!user || !user.ssid) return;
 
             console.log(`🔌 Restoring session for user ${userId} (${user.email})...`);
-            
-            // Sync settings from WebApp
-            if (user.email) {
-                try {
-                    const webSettings = await getCredentials(user.email);
-                    if (webSettings) {
-                        console.log(`🌐 Synced settings from WebApp for ${user.email}`);
-                        await this.db.updateUser(userId, {
-                            tradeAmount: webSettings.tradeAmount || user.tradeAmount,
-                            martingale_enabled: webSettings.martingaleEnabled !== undefined ? webSettings.martingaleEnabled : user.martingale_enabled,
-                            account_type: webSettings.accountType || user.account_type
-                        });
-                    }
-                } catch (webErr) {
-                    console.log(`⚠️ Could not sync settings from WebApp for ${user.email}: ${webErr.message}`);
-                }
-            }
-            
+
+
+
             // We need a dummy password for the client if just using SSID, but the client doesn't need it if restoreSession works
             const iqClient = new IQOptionClient(user.email, 'restored_session', userId, this.db);
-            
+
             // Client.login() will call restoreSession() which uses the SSID from DB
             const restored = await iqClient.login();
-            
+
             if (restored) {
                 iqClient.onTradeOpened = (tradeData) => this.handleUserTradeOpened(userId, tradeData);
                 iqClient.onTradeClosed = (tradeResult) => this.handleUserTradeClosed(userId, tradeResult);
                 iqClient.onBalanceChanged = ({ amount, currency, accountType }) => {
                     this.db.updateUser(userId, { balance: amount, currency, connected: true });
-                    // Sync to webapp
-                    if (user.email) {
-                        updateSettings(user.email.toLowerCase(), { balance: amount, currency, accountType }).catch(err =>
-                            console.log(`⚠️ WebApp balance sync failed for ${user.email}:`, err.message)
-                        );
-                    }
+
                 };
 
                 this.userConnections.set(userId, iqClient);

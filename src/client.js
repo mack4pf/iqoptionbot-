@@ -72,23 +72,29 @@ class IQOptionClient {
         }
     }
 
-    // Get proxy config using tunnel (for HTTPS login)
+    // Get proxy config using tunnel (for HTTPS login) with sticky session
     getProxyConfig() {
         if (!process.env.IPROYAL_HOST) return null;
+
+        // Use chatId as session identifier to maintain same IP
+        const sessionId = this.chatId || 'default';
+        const proxyAuth = `${process.env.IPROYAL_USERNAME}_session_${sessionId}:${process.env.IPROYAL_PASSWORD}`;
 
         return tunnel.httpsOverHttp({
             proxy: {
                 host: process.env.IPROYAL_HOST,
                 port: parseInt(process.env.IPROYAL_PORT),
-                proxyAuth: `${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}`
+                proxyAuth: proxyAuth
             }
         });
     }
 
-    // Get WebSocket proxy agent (only used as fallback)
+    // Get WebSocket proxy agent with sticky session
     getWsProxyConfig() {
         if (!process.env.IPROYAL_HOST) return null;
-        const proxyUrl = `http://${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}@${process.env.IPROYAL_HOST}:${process.env.IPROYAL_PORT}`;
+        const sessionId = this.chatId || 'default';
+        const proxyAuth = `${process.env.IPROYAL_USERNAME}_session_${sessionId}:${process.env.IPROYAL_PASSWORD}`;
+        const proxyUrl = `http://${proxyAuth}@${process.env.IPROYAL_HOST}:${process.env.IPROYAL_PORT}`;
         return new HttpsProxyAgent(proxyUrl);
     }
 
@@ -125,7 +131,7 @@ class IQOptionClient {
                 if (httpsAgent) {
                     config.httpsAgent = httpsAgent;
                     config.proxy = false;
-                    console.log(`🔄 User ${this.chatId} using proxy for login`);
+                    console.log(`🔄 User ${this.chatId} using proxy for login (sticky session)`);
                 }
             }
 
@@ -148,7 +154,7 @@ class IQOptionClient {
             if (response.data && response.data.data && response.data.data.ssid) {
                 this.ssid = response.data.data.ssid;
 
-                // Store SSID in database
+                // Store SSID in database (disabled for now)
                 // if (this.db && this.chatId) {
                 //     await this.db.storeUserSsid(this.chatId, this.ssid);
                 //     console.log(`💾 SSID stored for user ${this.chatId}`);
@@ -184,7 +190,7 @@ class IQOptionClient {
     }
 
     // -----------------------------------------------------------------
-    // ADAPTIVE PROXY ROUTING: WebSocket tries DIRECT first, proxy only as fallback
+    // FORCE PROXY WEBSOCKET (NO DIRECT ATTEMPT) WITH STICKY SESSION
     // -----------------------------------------------------------------
     connect() {
         if (!this.ssid) {
@@ -212,52 +218,23 @@ class IQOptionClient {
         }
 
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
-
-        // 🚀 TRY DIRECT CONNECTION FIRST (saves proxy data)
-        console.log(`🔄 Connecting WebSocket for user ${this.chatId} DIRECT (data saving mode)...`);
-
-        try {
-            this.ws = new WebSocket(wsUrl);  // No proxy agent
-
-            // If direct fails with auth error, fall back to proxy
-            this.ws.on('unexpected-response', (req, res) => {
-                if (res.statusCode === 401 || res.statusCode === 403) {
-                    console.warn(`⚠️ Direct connection refused (${res.statusCode}). Falling back to PROXY...`);
-                    this._attemptProxyConnection(wsUrl);
-                }
-            });
-
-            this.setupWsHandlers();
-            this._isReconnecting = false;
-
-        } catch (e) {
-            console.error(`❌ Direct WebSocket creation failed: ${e.message}`);
-            this._attemptProxyConnection(wsUrl);
-            this._isReconnecting = false;
-        }
-    }
-
-    // Fallback: connect via proxy if direct fails
-    _attemptProxyConnection(wsUrl) {
-        // Clean up failed direct websocket
-        if (this.ws) {
-            this.ws.removeAllListeners();
-            try { this.ws.terminate(); } catch (e) { }
-            this.ws = null;
-        }
-
         const agent = this.getWsProxyConfig();
+
         if (!agent) {
-            console.error('❌ No proxy configured. Cannot fall back.');
+            console.error('❌ No proxy configured. WebSocket cannot connect.');
+            this._isReconnecting = false;
             return;
         }
 
-        console.log(`🔄 Connecting WebSocket for user ${this.chatId} via PROXY (fallback)...`);
+        console.log(`🔄 Connecting WebSocket for user ${this.chatId} via PROXY (sticky session)...`);
+
         try {
             this.ws = new WebSocket(wsUrl, { agent });
             this.setupWsHandlers();
+            this._isReconnecting = false;
         } catch (e) {
             console.error(`❌ Proxy WebSocket creation failed: ${e.message}`);
+            this._isReconnecting = false;
         }
     }
 
@@ -270,13 +247,13 @@ class IQOptionClient {
             // 💓 HEARTBEAT: native ping every 45s (tiny 2-byte packets)
             this.pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.ping();  // Protocol-level ping – minimal data usage
+                    this.ws.ping();
                 } else {
                     console.log(`⚠️ User ${this.chatId} heartbeat: WebSocket dead, closing...`);
                     if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
                     try { this.ws.close(); } catch (e) { }
                 }
-            }, 45000); // 45 seconds (fits within most proxy timeouts)
+            }, 45000);
 
             // Request profile
             this.refreshProfile();
@@ -318,8 +295,8 @@ class IQOptionClient {
             this.connected = false;
         });
 
-        this.ws.on('close', () => {
-            console.log(`🔌 WebSocket closed for user ${this.chatId}`);
+        this.ws.on('close', (code, reason) => {
+            console.log(`🔌 WebSocket closed for user ${this.chatId} | Code: ${code} | Reason: ${reason}`);
             this.connected = false;
             this._isReconnecting = false;
             if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
@@ -381,7 +358,6 @@ class IQOptionClient {
         console.log(`💰 User ${this.chatId} - REAL Balance: ${this.realCurrency} ${this.realBalance}`);
         console.log(`💰 User ${this.chatId} - PRACTICE Balance: ${this.practiceCurrency} ${this.practiceBalance}`);
 
-        // Initialize last emited variables if they don't exist
         if (this._lastEmittedBalance === undefined) this._lastEmittedBalance = null;
         if (this._lastEmittedType === undefined) this._lastEmittedType = null;
 

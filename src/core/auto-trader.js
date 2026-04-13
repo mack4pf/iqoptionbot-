@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-const { checkSubscription } = require('../utils/webapp');
+
 
 class AutoTrader {
     constructor(telegramBot, db) {
@@ -125,37 +125,9 @@ class AutoTrader {
             const user = await this.db.getUser(userId);
             if (!user) return { success: false, error: 'User not found' };
 
-            // NOJAI Webapp Subscription Check
-            if (user.email) {
-                try {
-                    const subStatus = await checkSubscription(user.email);
-                    if (!subStatus || !subStatus.valid) {
-                        console.log(`⛔ Subscription invalid/expired for ${user.email}. Skipping trade.`);
-                        return { success: false, error: 'Subscription invalid' };
-                    }
-                    // Optional: fetch user credentials/settings if needed here, 
-                    // though getCredentials is usually for login.
-                } catch (err) {
-                    console.error('Subscription check failed, assuming invalid:', err.message);
-                    return { success: false, error: 'Subscription check failed' };
-                }
-            }
 
-            // Fetch settings from WebApp to ensure we have latest config
-            let webSettings = null;
-            if (user.email) {
-                try {
-                    webSettings = await getCredentials(user.email);
-                    if (webSettings) {
-                        console.log(`🌐 Synced trade settings from WebApp for ${user.email}`);
-                    }
-                } catch (err) {
-                    console.log(`⚠️ WebApp settings fetch failed for ${user.email}:`, err.message);
-                }
-            }
 
             let martingaleEnabled = user.martingale_enabled !== false;
-            if (webSettings?.martingaleEnabled !== undefined) martingaleEnabled = webSettings.martingaleEnabled;
 
             const currency = client?.currency || user.currency || 'USD';
             const min = this.getCurrencyMin(currency);
@@ -163,7 +135,6 @@ class AutoTrader {
             let state = null;
             if (martingaleEnabled) {
                 let baseAmount = this.getBaseAmount(user, currency);
-                if (webSettings?.tradeAmount) baseAmount = webSettings.tradeAmount;
                 state = this.getMartingaleState(userId, user, currency);
                 if (state.baseAmount !== baseAmount) {
                     state.baseAmount = baseAmount;
@@ -176,7 +147,7 @@ class AutoTrader {
                 }
                 tradeAmount = state.currentAmount;
             } else {
-                tradeAmount = webSettings?.tradeAmount || user.tradeAmount || min;
+                tradeAmount = user.tradeAmount || min;
             }
             tradeAmount = this.validateAmount(tradeAmount, currency);
             if (client.balance < tradeAmount) {
