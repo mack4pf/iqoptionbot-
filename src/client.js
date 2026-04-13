@@ -316,11 +316,15 @@ class IQOptionClient {
         this.ws.on('close', () => {
             console.log(`🔌 WebSocket closed for user ${this.chatId}`);
             this.connected = false;
+            this._isReconnecting = false;
             if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
-            this._reconnectTimer = setTimeout(() => {
-                console.log(`🔄 Reconnecting user ${this.chatId}...`);
-                this.connect();
-            }, 5000);
+            if (this.ws) {
+                if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+                this._reconnectTimer = setTimeout(() => {
+                    console.log(`🔄 Reconnecting user ${this.chatId}...`);
+                    this.connect();
+                }, 10000); // Increased backoff to 10s
+            }
         });
     }
 
