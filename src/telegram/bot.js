@@ -1230,7 +1230,7 @@ class TelegramBot {
             }
 
             await ctx.reply('✅ Switched to PRACTICE account');
-        };
+        });
 
         this.bot.hears('💵 Real Mode', async (ctx) => {
             if (!ctx.state.user) return;
