@@ -262,7 +262,9 @@ class TelegramBot {
                     }
 
                     if (!user && pendingCode) {
-
+                        try {
+                            await this.db.registerUserWithCode(ctx.from.id, email, password, pendingCode);
+                            user = await this.db.getUser(ctx.from.id);
                             ctx.session.pendingCode = null;
                         } catch (regError) {
                             await ctx.deleteMessage(statusMsg.message_id).catch(() => { });
@@ -282,7 +284,6 @@ class TelegramBot {
 
                     iqClient.onBalanceChanged = ({ amount, currency, accountType }) => {
                         this.db.updateUser(ctx.from.id, { balance: amount, currency, connected: true });
-
                     };
 
                     this.userConnections.set(ctx.from.id, iqClient);
@@ -1613,8 +1614,6 @@ ${resultEmoji} ${resultText}
 
             console.log(`🔌 Restoring session for user ${userId} (${user.email})...`);
 
-
-
             // We need a dummy password for the client if just using SSID, but the client doesn't need it if restoreSession works
             const iqClient = new IQOptionClient(user.email, 'restored_session', userId, this.db);
 
@@ -1626,7 +1625,6 @@ ${resultEmoji} ${resultText}
                 iqClient.onTradeClosed = (tradeResult) => this.handleUserTradeClosed(userId, tradeResult);
                 iqClient.onBalanceChanged = ({ amount, currency, accountType }) => {
                     this.db.updateUser(userId, { balance: amount, currency, connected: true });
-
                 };
 
                 this.userConnections.set(userId, iqClient);
