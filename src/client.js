@@ -72,29 +72,23 @@ class IQOptionClient {
         }
     }
 
-    // Get proxy config using tunnel (for HTTPS login) with sticky session
+    // Get proxy config using tunnel (for HTTPS login)
     getProxyConfig() {
         if (!process.env.IPROYAL_HOST) return null;
-
-        // Use chatId as session identifier to maintain same IP
-        const sessionId = this.chatId || 'default';
-        const proxyAuth = `${process.env.IPROYAL_USERNAME}_session_${sessionId}:${process.env.IPROYAL_PASSWORD}`;
 
         return tunnel.httpsOverHttp({
             proxy: {
                 host: process.env.IPROYAL_HOST,
                 port: parseInt(process.env.IPROYAL_PORT),
-                proxyAuth: proxyAuth
+                proxyAuth: `${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}`
             }
         });
     }
 
-    // Get WebSocket proxy agent with sticky session
+    // Get WebSocket proxy agent (random rotation - no sticky session)
     getWsProxyConfig() {
         if (!process.env.IPROYAL_HOST) return null;
-        const sessionId = this.chatId || 'default';
-        const proxyAuth = `${process.env.IPROYAL_USERNAME}_session_${sessionId}:${process.env.IPROYAL_PASSWORD}`;
-        const proxyUrl = `http://${proxyAuth}@${process.env.IPROYAL_HOST}:${process.env.IPROYAL_PORT}`;
+        const proxyUrl = `http://${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}@${process.env.IPROYAL_HOST}:${process.env.IPROYAL_PORT}`;
         return new HttpsProxyAgent(proxyUrl);
     }
 
@@ -131,7 +125,7 @@ class IQOptionClient {
                 if (httpsAgent) {
                     config.httpsAgent = httpsAgent;
                     config.proxy = false;
-                    console.log(`🔄 User ${this.chatId} using proxy for login (sticky session)`);
+                    console.log(`🔄 User ${this.chatId} using proxy for login`);
                 }
             }
 
@@ -139,8 +133,8 @@ class IQOptionClient {
             try {
                 response = await axios(config);
             } catch (err) {
-                // If Proxy error (403, 402, or Bridge/Tunneling error), fallback to direct
-                const isProxyError = err.response?.status === 403 || err.response?.status === 402 || err.message?.includes('tunneling socket');
+                // If Proxy error, fallback to direct
+                const isProxyError = err.response?.status === 403 || err.response?.status === 402 || err.response?.status === 407 || err.message?.includes('tunneling socket');
                 if (useProxy && isProxyError) {
                     console.warn(`⚠️ User ${this.chatId} proxy failed (${err.response?.status || err.message}). Retrying login DIRECT...`);
                     delete config.httpsAgent;
@@ -153,12 +147,6 @@ class IQOptionClient {
 
             if (response.data && response.data.data && response.data.data.ssid) {
                 this.ssid = response.data.data.ssid;
-
-                // Store SSID in database (disabled for now)
-                // if (this.db && this.chatId) {
-                //     await this.db.storeUserSsid(this.chatId, this.ssid);
-                //     console.log(`💾 SSID stored for user ${this.chatId}`);
-                // }
 
                 console.log(`✅ User ${this.chatId} login successful`);
 
@@ -190,7 +178,7 @@ class IQOptionClient {
     }
 
     // -----------------------------------------------------------------
-    // FORCE PROXY WEBSOCKET (NO DIRECT ATTEMPT) WITH STICKY SESSION
+    // FORCE PROXY WEBSOCKET (NO DIRECT ATTEMPT) - RANDOM IP ROTATION
     // -----------------------------------------------------------------
     connect() {
         if (!this.ssid) {
@@ -226,7 +214,7 @@ class IQOptionClient {
             return;
         }
 
-        console.log(`🔄 Connecting WebSocket for user ${this.chatId} via PROXY (sticky session)...`);
+        console.log(`🔄 Connecting WebSocket for user ${this.chatId} via PROXY (random rotation)...`);
 
         try {
             this.ws = new WebSocket(wsUrl, { agent });
@@ -244,7 +232,7 @@ class IQOptionClient {
             this.connected = true;
             this.send({ name: 'ssid', msg: this.ssid });
 
-            // 💓 HEARTBEAT: native ping every 45s (tiny 2-byte packets)
+            // Heartbeat every 45 seconds
             this.pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.ws.ping();
