@@ -132,9 +132,10 @@ class IQOptionClient {
             try {
                 response = await axios(config);
             } catch (err) {
-                // If 403/Forbidden with proxy, try one last time WITHOUT proxy
-                if (useProxy && err.response?.status === 403) {
-                    console.log(`⚠️ User ${this.chatId} proxy login was FORBIDDEN (403). Retrying without proxy...`);
+                // If Proxy error (403, 402, or Bridge/Tunneling error), fallback to direct
+                const isProxyError = err.response?.status === 403 || err.response?.status === 402 || err.message?.includes('tunneling socket');
+                if (useProxy && isProxyError) {
+                    console.warn(`⚠️ User ${this.chatId} proxy failed (${err.response?.status || err.message}). Retrying login DIRECT...`);
                     delete config.httpsAgent;
                     config.proxy = false;
                     response = await axios(config);
@@ -210,12 +211,51 @@ class IQOptionClient {
         console.log(`🔄 Connecting WebSocket for user ${this.chatId}...`);
         
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
-        const agent = this.getWsProxyConfig(); // Use proxy for WebSocket too
-        const wsOptions = agent ? { agent } : {};
+        let agent = this.getWsProxyConfig();
+        let wsOptions = agent ? { agent } : {};
 
-        this.ws = new WebSocket(wsUrl, wsOptions);
-        this._isReconnecting = false;
+        console.log(`🔄 Connecting WebSocket for user ${this.chatId}${agent ? ' via Proxy' : ' (Direct)'}...`);
 
+        try {
+            this.ws = new WebSocket(wsUrl, wsOptions);
+            
+            // Critical: Add error handler immediately
+            this.ws.on('error', (e) => {
+                if (agent) console.warn(`⚠️ User ${this.chatId} initial socket error: ${e.message}`);
+                // If it's a proxy error and we haven't switched yet, we'll let unexpected-response handled it
+                // or handle it here if it's a socket error
+            });
+
+            // Handle proxy handshake failure (like 402/403)
+            this.ws.on('unexpected-response', (req, res) => {
+                if (agent && (res.statusCode === 402 || res.statusCode === 403)) {
+                    console.warn(`⚠️ User ${this.chatId} proxy failed with ${res.statusCode}. Switching to DIRECT...`);
+                    
+                    // Attach a "safety" error handler to the failing socket so it doesn't crash the bot
+                    this.ws.on('error', () => {}); 
+                    
+                    // Kill the current failing socket listeners
+                    this.ws.removeAllListeners('unexpected-response');
+                    this.ws.removeAllListeners('open');
+                    this.ws.removeAllListeners('message');
+                    
+                    try { this.ws.terminate(); } catch (e) { }
+                    
+                    // Create new socket immediately (Direct)
+                    this.ws = new WebSocket(wsUrl); 
+                    this.setupWsHandlers(); 
+                }
+            });
+
+            this.setupWsHandlers();
+            this._isReconnecting = false;
+        } catch (e) {
+            console.error(`❌ WebSocket creation failed: ${e.message}`);
+            this._isReconnecting = false;
+        }
+    }
+
+    setupWsHandlers() {
         this.ws.on('open', () => {
             console.log(`✅ WebSocket connected for user ${this.chatId}`);
             this.connected = true;
