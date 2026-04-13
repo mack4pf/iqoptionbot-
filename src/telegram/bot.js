@@ -539,8 +539,10 @@ class TelegramBot {
             client.refreshProfile();
 
             await this.db.updateUser(ctx.from.id, { account_type: type });
-
-
+            
+            if (this.tradingBot?.autoTrader) {
+                this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
+            }
 
             await ctx.reply(`✅ Switched to ${type} account`);
         };
@@ -1223,10 +1225,12 @@ class TelegramBot {
             client.balanceId = client.practiceBalanceId;
             await this.db.updateUser(ctx.from.id, { account_type: 'PRACTICE' });
 
-
+            if (this.tradingBot?.autoTrader) {
+                this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
+            }
 
             await ctx.reply('✅ Switched to PRACTICE account');
-        });
+        };
 
         this.bot.hears('💵 Real Mode', async (ctx) => {
             if (!ctx.state.user) return;
@@ -1393,7 +1397,9 @@ class TelegramBot {
             client.balanceId = client.realBalanceId;
             await this.db.updateUser(ctx.from.id.toString(), { account_type: 'REAL' });
 
-
+            if (this.tradingBot?.autoTrader) {
+                this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
+            }
 
             const symbol = this.getCurrencySymbol(client.realCurrency);
             await ctx.reply(`✅ Switched to REAL account\n💰 Balance: ${symbol}${client.realBalance}`);

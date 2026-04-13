@@ -16,15 +16,15 @@ class AutoTrader {
         this.lastTradeCloseTime = new Map();
 
         this.currencyLimits = {
-            NGN: { min: 1500, max: 50000000 },
+            NGN: { min: 30, max: 50000000 },
             USD: { min: 1, max: 10000000 },
             EUR: { min: 1, max: 100000 },
             GBP: { min: 1, max: 100000 },
             BRL: { min: 5, max: 500000 },
-            INR: { min: 70, max: 7000000 },
-            MXN: { min: 20, max: 2000000 },
-            AED: { min: 5, max: 500000 },
-            ZAR: { min: 20, max: 2000000 },
+            INR: { min: 1, max: 7000000 },
+            MXN: { min: 1, max: 2000000 },
+            AED: { min: 1, max: 500000 },
+            ZAR: { min: 1, max: 2000000 },
         };
     }
 
@@ -137,8 +137,11 @@ class AutoTrader {
                 let baseAmount = this.getBaseAmount(user, currency);
                 state = this.getMartingaleState(userId, user, currency);
                 if (state.baseAmount !== baseAmount) {
+                    console.log(`🔄 User ${userId}: Base amount changed from ${state.baseAmount} to ${baseAmount}. Resetting martingale step.`);
                     state.baseAmount = baseAmount;
-                    state.currentAmount = baseAmount * this.martingaleMultipliers[state.step];
+                    state.step = 0;
+                    state.losses = 0;
+                    state.currentAmount = baseAmount;
                     this.activeTrades.set(userId, state);
                 }
                 if (state.initialBalance === 0 && client.balance > 0) {
