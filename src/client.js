@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const axios = require('axios');
 const tunnel = require('tunnel');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 class IQOptionClient {
     constructor(email, password, chatId = null, db = null) {
@@ -82,6 +83,10 @@ class IQOptionClient {
                 proxyAuth: `${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}`
             }
         });
+    getWsProxyConfig() {
+        if (!process.env.IPROYAL_HOST) return null;
+        const proxyUrl = `http://${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}@${process.env.IPROYAL_HOST}:${process.env.IPROYAL_PORT}`;
+        return new HttpsProxyAgent(proxyUrl);
     }
 
     async login(useProxy = true) {
@@ -201,8 +206,12 @@ class IQOptionClient {
         }
 
         console.log(`🔄 Connecting WebSocket for user ${this.chatId}...`);
+        
+        const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
+        const agent = this.getWsProxyConfig(); // Use proxy for WebSocket too
+        const wsOptions = agent ? { agent } : {};
 
-        this.ws = new WebSocket(`wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`);
+        this.ws = new WebSocket(wsUrl, wsOptions);
         this._isReconnecting = false;
 
         this.ws.on('open', () => {
@@ -220,7 +229,7 @@ class IQOptionClient {
                     if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
                     try { this.ws.close(); } catch (e) {}
                 }
-            }, 30000);
+            }, 10000); // 10s heartbeat for better proxy stability
 
             // Request profile
             this.refreshProfile();

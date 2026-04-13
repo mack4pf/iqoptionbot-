@@ -29,7 +29,8 @@ async function getGlobalTradeDuration() {
         const uri = process.env.MONGODB_URI;
         const client = new MongoClient(uri);
         await client.connect();
-        const db = client.db('trading_bot');
+        const dbName = uri.includes('mongodb.net/') ? uri.split('mongodb.net/')[1].split('?')[0] : 'niels-autotrade';
+        const db = client.db(dbName || 'niels-autotrade');
 
         const setting = await db.collection('settings').findOne({ key: 'trade_duration' });
         if (setting && setting.value) {
@@ -69,8 +70,8 @@ async function refreshDurationCache() {
     return newDuration;
 }
 
-// 📡 Signal creation endpoint
-app.post('/api/signals/create', async (req, res) => {
+// 📡 Signal creation endpoint (Support both aliases)
+app.post(['/api/signals/create', '/api/tradingview'], async (req, res) => {
     // 1. Authenticate
     const adminSecret = req.headers['x-admin-secret'];
     if (!adminSecret || adminSecret !== process.env.SIGNAL_SECRET) {
