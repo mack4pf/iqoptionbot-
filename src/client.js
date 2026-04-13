@@ -321,7 +321,15 @@ class IQOptionClient {
         console.log(`💰 User ${this.chatId} - REAL Balance: ${this.realCurrency} ${this.realBalance}`);
         console.log(`💰 User ${this.chatId} - PRACTICE Balance: ${this.practiceCurrency} ${this.practiceBalance}`);
 
-        if (this.onBalanceChanged) {
+        // Initialize last emited variables if they don't exist
+        if (this._lastEmittedBalance === undefined) this._lastEmittedBalance = null;
+        if (this._lastEmittedType === undefined) this._lastEmittedType = null;
+
+        const hasChanged = this.balance !== this._lastEmittedBalance || this.accountType !== this._lastEmittedType;
+
+        if (hasChanged && this.onBalanceChanged) {
+            this._lastEmittedBalance = this.balance;
+            this._lastEmittedType = this.accountType;
             this.onBalanceChanged({
                 amount: this.balance,
                 currency: this.currency,
@@ -355,6 +363,18 @@ class IQOptionClient {
             this.balance = practiceBal.amount;
             this.currency = practiceBal.currency;
             this.balanceId = practiceBal.id;
+        }
+
+        const hasChanged = this.balance !== this._lastEmittedBalance || this.accountType !== this._lastEmittedType;
+
+        if (hasChanged && this.onBalanceChanged) {
+            this._lastEmittedBalance = this.balance;
+            this._lastEmittedType = this.accountType;
+            this.onBalanceChanged({
+                amount: this.balance,
+                currency: this.currency,
+                type: this.accountType
+            });
         }
     }
 
