@@ -35,7 +35,6 @@ class MongoDB {
 
             // Users collection indexes
             try {
-                // Drop the problematic index if it exists to avoid duplicate key errors
                 const existingIndexes = await users.listIndexes().toArray();
                 const hasEmail1 = existingIndexes.some(idx => idx.name === 'email_1');
                 if (hasEmail1) {
@@ -64,7 +63,6 @@ class MongoDB {
                 if (err.codeName === 'IndexKeySpecsConflict') console.log('ℹ️ Access expires index exists');
             }
 
-            // 🔥 NEW INDEX FOR SSID (optional but good for performance)
             try {
                 await users.createIndex({ "ssid": 1 }, { name: "ssid_index", sparse: true });
             } catch (err) {
@@ -144,7 +142,6 @@ class MongoDB {
                     last_active: new Date(),
                     is_admin: true,
                     access_expires_at: new Date('2099-12-31'),
-                    // 🔥 ADD SSID FIELDS FOR ADMIN
                     ssid: null,
                     ssid_updated_at: null
                 });
@@ -238,7 +235,6 @@ class MongoDB {
         }).toArray();
     }
 
-    // ✅ NEW: Delete user completely
     async deleteUser(chatId) {
         const users = this.db.collection('users');
         const result = await users.deleteOne({ _id: chatId.toString() });
@@ -285,21 +281,16 @@ class MongoDB {
                 current_amount: 1,
                 loss_streak: 0
             },
-            // 🔥 NEW FIELDS FOR SSID STORAGE
             ssid: null,
             ssid_updated_at: null
         };
 
-        // Insert user FIRST
         await users.insertOne(user);
-        
-        // ONLY if insertion succeeds, mark the code as used
         await this.useAccessCode(code, chatId);
 
         return user;
     }
 
-    // ✅ NEW: Update existing user with a new access code
     async updateUserAccessCode(chatId, code) {
         const accessCode = await this.validateAccessCode(code);
         if (!accessCode) {
@@ -313,10 +304,8 @@ class MongoDB {
             throw new Error('User not found');
         }
 
-        // Mark code as used FIRST since we know the user exists
         await this.useAccessCode(code, chatId);
 
-        // Update user access
         await users.updateOne(
             { _id: chatId.toString() },
             { 
@@ -345,7 +334,6 @@ class MongoDB {
         );
     }
 
-    // 🔥 NEW: Store SSID after successful login
     async storeUserSsid(chatId, ssid) {
         const users = this.db.collection('users');
         return await users.updateOne(
@@ -360,7 +348,6 @@ class MongoDB {
         );
     }
 
-    // 🔥 NEW: Get stored SSID
     async getUserSsid(chatId) {
         const users = this.db.collection('users');
         const user = await users.findOne(
@@ -370,7 +357,6 @@ class MongoDB {
         return user ? user.ssid : null;
     }
 
-    // 🔥 NEW: Clear SSID on logout
     async clearUserSsid(chatId) {
         const users = this.db.collection('users');
         return await users.updateOne(
@@ -384,7 +370,6 @@ class MongoDB {
         );
     }
 
-    // 🔥 NEW: Check if user has valid stored session
     async hasValidSession(chatId) {
         const users = this.db.collection('users');
         const user = await users.findOne(
@@ -394,19 +379,16 @@ class MongoDB {
 
         if (!user || !user.ssid) return false;
 
-        // Optional: Check if session is not too old (e.g., 30 days)
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
         if (user.ssid_updated_at && user.ssid_updated_at < thirtyDaysAgo) {
-            // Session is too old, clear it
             await this.clearUserSsid(chatId);
             return false;
         }
 
         return true;
     }
-    // ========== GLOBAL SETTINGS METHODS ==========
 
     async getGlobalSetting(key, defaultValue = 5) {
         try {
@@ -415,7 +397,6 @@ class MongoDB {
             if (setting) {
                 return setting.value;
             }
-            // Create default setting if not exists
             await collection.updateOne(
                 { key },
                 { $set: { value: defaultValue, updated_at: new Date() } },
@@ -443,6 +424,7 @@ class MongoDB {
             return false;
         }
     }
+
     async getAllUsers() {
         const users = this.db.collection('users');
         return await users.find({}).toArray();
@@ -459,7 +441,6 @@ class MongoDB {
     }
 
     async revokeUserAccess(chatId) {
-        // This now DELETES the user completely
         return await this.deleteUser(chatId);
     }
 
@@ -522,6 +503,17 @@ class MongoDB {
         decrypted += decipher.final('utf8');
 
         return decrypted;
+    }
+
+    // 🧹 NEW METHOD: Clear all stored SSIDs on startup
+    async clearAllSessions() {
+        try {
+            const users = this.db.collection('users');
+            await users.updateMany({}, { $unset: { ssid: "" }, $set: { connected: false } });
+            console.log('🧹 Cleared all stored SSIDs on startup – users must login fresh');
+        } catch (error) {
+            console.error('Failed to clear sessions:', error.message);
+        }
     }
 
     async close() {

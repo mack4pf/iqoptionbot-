@@ -50,6 +50,7 @@ class TradingBot {
         console.log('📁 Connecting to MongoDB...');
         this.db = new MongoDB();
         await this.db.connect();
+        await this.db.clearAllSessions(); // 🧹 Wipe old SSIDs on startup
         console.log('✅ MongoDB connected\n');
 
         // Initialize Auto-Trader FIRST

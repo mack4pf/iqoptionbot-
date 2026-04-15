@@ -85,19 +85,12 @@ class IQOptionClient {
         });
     }
 
-    // Get WebSocket proxy agent (random rotation - no sticky session)
-    getWsProxyConfig() {
-        if (!process.env.IPROYAL_HOST) return null;
-        const proxyUrl = `http://${process.env.IPROYAL_USERNAME}:${process.env.IPROYAL_PASSWORD}@${process.env.IPROYAL_HOST}:${process.env.IPROYAL_PORT}`;
-        return new HttpsProxyAgent(proxyUrl);
-    }
-
     async login(useProxy = true) {
-        // Try to restore session first
-        if (await this.restoreSession()) {
-            this.connect();
-            return true;
-        }
+        // ❌ DISABLED SESSION RESTORATION – Always fresh login
+        // if (await this.restoreSession()) {
+        //     this.connect();
+        //     return true;
+        // }
 
         console.log(`🔐 User ${this.chatId} logging in...`);
 
@@ -148,6 +141,12 @@ class IQOptionClient {
             if (response.data && response.data.data && response.data.data.ssid) {
                 this.ssid = response.data.data.ssid;
 
+                // Store SSID in DB (optional – but we won't use it for restoration)
+                if (this.db && this.chatId) {
+                    await this.db.storeUserSsid(this.chatId, this.ssid);
+                    console.log(`💾 SSID stored for user ${this.chatId}`);
+                }
+
                 console.log(`✅ User ${this.chatId} login successful`);
 
                 // Connect WebSocket
@@ -178,7 +177,7 @@ class IQOptionClient {
     }
 
     // -----------------------------------------------------------------
-    // FORCE PROXY WEBSOCKET (NO DIRECT ATTEMPT) - RANDOM IP ROTATION
+    // FORCE DIRECT WEBSOCKET (NO PROXY) TO SAVE DATA
     // -----------------------------------------------------------------
     connect() {
         if (!this.ssid) {
@@ -206,23 +205,18 @@ class IQOptionClient {
         }
 
         const wsUrl = `wss://ws.iqoption.com/echo/websocket?ssid=${this.ssid}`;
-        const agent = this.getWsProxyConfig();
 
-        if (!agent) {
-            console.error('❌ No proxy configured. WebSocket cannot connect.');
-            this._isReconnecting = false;
-            return;
-        }
-
-        console.log(`🔄 Connecting WebSocket for user ${this.chatId} via PROXY (random rotation)...`);
+        // 🔥 DATA SAVING: DIRECT WebSocket (bypass proxy)
+        console.log(`🔄 Connecting WebSocket for user ${this.chatId} DIRECT (proxy bypassed to save data)...`);
 
         try {
-            this.ws = new WebSocket(wsUrl, { agent });
+            this.ws = new WebSocket(wsUrl); // No proxy agent
             this.setupWsHandlers();
             this._isReconnecting = false;
         } catch (e) {
-            console.error(`❌ Proxy WebSocket creation failed: ${e.message}`);
+            console.error(`❌ WebSocket creation failed: ${e.message}`);
             this._isReconnecting = false;
+            this._reconnectTimer = setTimeout(() => this.connect(), 10000);
         }
     }
 
@@ -232,7 +226,7 @@ class IQOptionClient {
             this.connected = true;
             this.send({ name: 'ssid', msg: this.ssid });
 
-            // Heartbeat every 45 seconds
+            // Heartbeat every 45 seconds using native ping (tiny packets)
             this.pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.ws.ping();

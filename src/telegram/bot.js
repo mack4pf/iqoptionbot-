@@ -539,7 +539,7 @@ class TelegramBot {
             client.refreshProfile();
 
             await this.db.updateUser(ctx.from.id, { account_type: type });
-            
+
             if (this.tradingBot?.autoTrader) {
                 this.tradingBot.autoTrader.clearUserState(ctx.from.id.toString());
             }
@@ -1529,41 +1529,50 @@ class TelegramBot {
 
     async handleUserTradeClosed(userId, tradeResult) {
         try {
-            console.log(`📤 Processing trade result for user ${userId}: ${tradeResult.isWin ? 'WIN' : 'LOSS'}`);
-            
-            // 1. Let AutoTrader handle the heavy lifting (martingale, DB updates, user notification)
-            if (this.tradingBot?.autoTrader) {
-                await this.tradingBot.autoTrader.handleTradeResult(userId, tradeResult);
-            }
+            const user = await this.db.getUser(userId);
+            if (!user) return;
 
-            // 2. Extract common data for broadcasts
+            const channels = await this.db.getActiveChannels();
+            const adminId = process.env.ADMIN_CHAT_ID;
+
             const resultEmoji = tradeResult.isWin ? '✅' : '❌';
             const resultText = tradeResult.isWin ? 'WIN' : 'LOSS';
-            const asset = tradeResult.asset || 'N/A';
-            
-            // 3. Broadcast to channels for Admin trades
-            const adminId = process.env.ADMIN_CHAT_ID;
-            if (userId.toString() === adminId?.toString()) {
-                const channels = await this.db.getActiveChannels();
-                const broadcastMessage = `
-${resultEmoji} *ADMIN TRADE ${resultText}* 
+
+            const message = `
+${resultEmoji} ${resultText} 
 ━━━━━━━━━━━━━━━
-📊 Asset: ${asset}
-📈 Direction: ${(tradeResult.direction || '').toUpperCase()}
-💰 Result: ${resultText}
-                `;
-                
+📊 Asset: ${tradeResult.asset}
+
+            `;
+
+            console.log(`📤 Sending trade result for user ${userId}: ${tradeResult.isWin ? 'WIN' : 'LOSS'}`);
+
+            if (userId === adminId) {
                 for (const channel of channels) {
                     try {
-                        await this.bot.telegram.sendMessage(channel.channel_id, broadcastMessage, { parse_mode: 'Markdown' });
+                        await this.bot.telegram.sendMessage(channel.channel_id, message, { parse_mode: 'Markdown' });
                     } catch (err) {
                         console.error(`Failed to send admin result to channel:`, err.message);
                     }
                 }
             }
 
+            try {
+                await this.bot.telegram.sendMessage(userId, message, { parse_mode: 'Markdown' });
+            } catch (err) {
+                console.error(`Failed to send to user ${userId}:`, err.message);
+            }
+
+            if (adminId && adminId !== userId) {
+                try {
+                    await this.bot.telegram.sendMessage(adminId, message, { parse_mode: 'Markdown' });
+                } catch (err) {
+                    console.error(`Failed to send to admin:`, err.message);
+                }
+            }
+
         } catch (error) {
-            console.error('Error in handleUserTradeClosed:', error);
+            console.error('Error handling trade closed:', error);
         }
     }
 
