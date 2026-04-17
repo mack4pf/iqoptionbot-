@@ -1535,6 +1535,10 @@ class TelegramBot {
             const channels = await this.db.getActiveChannels();
             const adminId = process.env.ADMIN_CHAT_ID;
 
+            if (this.tradingBot?.autoTrader) {
+                await this.tradingBot.autoTrader.handleTradeResult(userId, tradeResult);
+            }
+
             const resultEmoji = tradeResult.isWin ? '✅' : '❌';
             const resultText = tradeResult.isWin ? 'WIN' : 'LOSS';
 
@@ -1555,6 +1559,10 @@ ${resultEmoji} ${resultText}
                         console.error(`Failed to send admin result to channel:`, err.message);
                     }
                 }
+            }
+
+            if (this.tradingBot?.autoTrader) {
+                return;
             }
 
             try {
