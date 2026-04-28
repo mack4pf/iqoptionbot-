@@ -2,6 +2,8 @@ const express = require('express');
 const { MongoClient } = require('mongodb');
 const app = express();
 app.use(express.json());
+app.use(express.text()); // To parse plain text signals from TradingView
+app.use(express.urlencoded({ extended: true }));
 
 let tradingBotInstance = null;
 
@@ -122,6 +124,103 @@ app.post(['/api/signals/create', '/api/tradingview'], async (req, res) => {
         }).catch(err => console.error('❌ Signal execution error:', err));
     } else {
         console.error('❌ Trading bot not initialized');
+    }
+});
+
+// 📡 New specific TradingView webhook for 5-minute trades (Plain Text or JSON)
+app.post('/api/tv-webhook', async (req, res) => {
+    // Support secret in query params (easier for TradingView alerts) or headers
+    const secret = req.query.secret || req.headers['x-admin-secret'] || (req.body && req.body.secret);
+    if (!secret || secret !== process.env.SIGNAL_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized. Please include ?secret=YOUR_SECRET in the URL.' });
+    }
+
+    // Normalize body to uppercase string for easy keyword matching
+    let rawText = '';
+    if (typeof req.body === 'object') {
+        rawText = JSON.stringify(req.body).toUpperCase();
+    } else if (typeof req.body === 'string') {
+        rawText = req.body.toUpperCase();
+    }
+
+    // 1 & 2. Determine direction and asset (ticker)
+    let direction = null;
+    let ticker = null;
+
+    // Try to match the exact TradingView strategy format the user provided:
+    // e.g. "BOOST CAPITAL (...): order buy @ 10 filled on EURUSD"
+    // Since rawText is uppercase, we match uppercase
+    const strategyRegex = /ORDER\s+(BUY|SELL|CALL|PUT)\s+@.*?FILLED\s+ON\s+([A-Z0-9-]+)/;
+    const match = rawText.match(strategyRegex);
+
+    if (match) {
+        const parsedAction = match[1];
+        direction = (parsedAction === 'BUY' || parsedAction === 'CALL') ? 'call' : 'put';
+        ticker = match[2];
+    } else {
+        // Fallback: If it's not the exact TradingView format, try simple keywords
+        if (rawText.includes('BUY') || rawText.includes('CALL') || rawText.includes('UP')) {
+            direction = 'call';
+        } else if (rawText.includes('SELL') || rawText.includes('PUT') || rawText.includes('DOWN')) {
+            direction = 'put';
+        }
+
+        ticker = req.query.ticker;
+        if (req.body && typeof req.body === 'object' && req.body.ticker) {
+            ticker = req.body.ticker;
+        }
+        
+        if (!ticker) {
+            const commonPairs = [
+                'EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD', 'USDCHF', 'AUDUSD', 'NZDUSD',
+                'EURJPY', 'GBPJPY', 'EURGBP', 'EURCAD', 'EURAUD', 'EURCHF', 'AUDJPY',
+                'CADJPY', 'CHFJPY', 'NZDJPY', 'GBPCAD', 'GBPAUD', 'GBPCHF'
+            ];
+            for (const pair of commonPairs) {
+                if (rawText.includes(pair) || 
+                    rawText.includes(`${pair.slice(0,3)}/${pair.slice(3,6)}`) || 
+                    rawText.includes(`${pair.slice(0,3)}-${pair.slice(3,6)}`)) {
+                    ticker = pair;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!ticker) {
+        return res.status(400).json({ error: 'Could not detect asset. Provide ?ticker=EURUSD in URL.' });
+    }
+
+    // Handle OTC pairs if mentioned in the alert text
+    if (rawText.includes('OTC') && !ticker.includes('OTC')) {
+        ticker += '-OTC';
+    }
+
+    // 3. Force 5-minute trade duration
+    const duration = 5;
+    const signalId = `TV_5M_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
+    console.log(`📡 TradingView Webhook: Executing ${direction.toUpperCase()} on ${ticker} for ${duration} minutes`);
+
+    // Respond to TradingView immediately
+    res.json({
+        status: 'success',
+        message: 'Signal accepted for 5 minute trade',
+        signalId: signalId,
+        ticker: ticker,
+        direction: direction,
+        duration: duration
+    });
+
+    // Send to bot
+    if (tradingBotInstance) {
+        tradingBotInstance.executeSignalForAllUsers({
+            asset: ticker,
+            direction: direction,
+            duration: duration,
+            price: 0,
+            signalId: signalId
+        }).catch(err => console.error('❌ TV Signal execution error:', err));
     }
 });
 
