@@ -147,21 +147,24 @@ app.post('/api/tv-webhook', async (req, res) => {
     let direction = null;
     let ticker = null;
 
-    // Try to match the exact TradingView strategy format the user provided:
-    // e.g. "BOOST CAPITAL (...): order buy @ 10 filled on EURUSD"
-    // Since rawText is uppercase, we match uppercase
-    const strategyRegex = /ORDER\s+(BUY|SELL|CALL|PUT)\s+@.*?FILLED\s+ON\s+([A-Z0-9-]+)/;
+    // Robust regex to match various TradingView formats including colons (like OANDA:EURUSD) and long/short
+    const strategyRegex = /ORDER\s+(BUY|SELL|CALL|PUT|LONG|SHORT).*?FILLED\s+ON\s+([A-Z0-9-:]+)/;
     const match = rawText.match(strategyRegex);
 
     if (match) {
         const parsedAction = match[1];
-        direction = (parsedAction === 'BUY' || parsedAction === 'CALL') ? 'call' : 'put';
+        direction = (parsedAction === 'BUY' || parsedAction === 'CALL' || parsedAction === 'LONG') ? 'call' : 'put';
         ticker = match[2];
+        
+        // If it parsed OANDA:EURUSD, strip the broker prefix
+        if (ticker.includes(':')) {
+            ticker = ticker.split(':')[1];
+        }
     } else {
-        // Fallback: If it's not the exact TradingView format, try simple keywords
-        if (rawText.includes('BUY') || rawText.includes('CALL') || rawText.includes('UP')) {
+        // Fallback: simple keywords
+        if (rawText.includes('BUY') || rawText.includes('CALL') || rawText.includes('UP') || rawText.includes('LONG')) {
             direction = 'call';
-        } else if (rawText.includes('SELL') || rawText.includes('PUT') || rawText.includes('DOWN')) {
+        } else if (rawText.includes('SELL') || rawText.includes('PUT') || rawText.includes('DOWN') || rawText.includes('SHORT')) {
             direction = 'put';
         }
 
@@ -187,8 +190,14 @@ app.post('/api/tv-webhook', async (req, res) => {
         }
     }
 
-    if (!ticker) {
-        return res.status(400).json({ error: 'Could not detect asset. Provide ?ticker=EURUSD in URL.' });
+    if (!direction || !ticker) {
+        const errMsg = `⚠️ Webhook Parse Error\n\nCould not detect Buy/Sell or Pair from this text:\n\n${rawText}`;
+        console.error(errMsg);
+        if (tradingBotInstance && tradingBotInstance.telegramBot && process.env.ADMIN_CHAT_ID) {
+            tradingBotInstance.telegramBot.bot.telegram.sendMessage(process.env.ADMIN_CHAT_ID, errMsg).catch(console.error);
+        }
+        // Return 200 OK anyway so TradingView doesn't disable the webhook
+        return res.status(200).json({ error: 'Parse Error - Admins notified', raw: rawText });
     }
 
     // Handle OTC pairs if mentioned in the alert text
