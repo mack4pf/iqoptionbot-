@@ -143,66 +143,71 @@ app.post('/api/tv-webhook', async (req, res) => {
         rawText = req.body.toUpperCase();
     }
 
-    // 1 & 2. Determine direction and asset (ticker)
+    console.log(`📨 Raw signal received: ${rawText}`);
+
+    // ── STEP 1: Detect direction ──────────────────────────────────────────────
+    // Simply check if BUY or SELL appears ANYWHERE in the text
     let direction = null;
-    let ticker = null;
 
-    // Robust regex to match various TradingView formats including colons (like OANDA:EURUSD) and long/short
-    const strategyRegex = /ORDER\s+(BUY|SELL|CALL|PUT|LONG|SHORT).*?FILLED\s+ON\s+([A-Z0-9-:]+)/;
-    const match = rawText.match(strategyRegex);
-
-    if (match) {
-        const parsedAction = match[1];
-        direction = (parsedAction === 'BUY' || parsedAction === 'CALL' || parsedAction === 'LONG') ? 'call' : 'put';
-        ticker = match[2];
-        
-        // If it parsed OANDA:EURUSD, strip the broker prefix
-        if (ticker.includes(':')) {
-            ticker = ticker.split(':')[1];
-        }
-    } else {
-        // Fallback: simple keywords
-        if (rawText.includes('BUY') || rawText.includes('CALL') || rawText.includes('UP') || rawText.includes('LONG')) {
-            direction = 'call';
-        } else if (rawText.includes('SELL') || rawText.includes('PUT') || rawText.includes('DOWN') || rawText.includes('SHORT')) {
-            direction = 'put';
-        }
-
-        ticker = req.query.ticker;
-        if (req.body && typeof req.body === 'object' && req.body.ticker) {
-            ticker = req.body.ticker;
-        }
-        
-        if (!ticker) {
-            const commonPairs = [
-                'EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD', 'USDCHF', 'AUDUSD', 'NZDUSD',
-                'EURJPY', 'GBPJPY', 'EURGBP', 'EURCAD', 'EURAUD', 'EURCHF', 'AUDJPY',
-                'CADJPY', 'CHFJPY', 'NZDJPY', 'GBPCAD', 'GBPAUD', 'GBPCHF'
-            ];
-            for (const pair of commonPairs) {
-                if (rawText.includes(pair) || 
-                    rawText.includes(`${pair.slice(0,3)}/${pair.slice(3,6)}`) || 
-                    rawText.includes(`${pair.slice(0,3)}-${pair.slice(3,6)}`)) {
-                    ticker = pair;
-                    break;
-                }
-            }
-        }
+    if (rawText.includes('BUY') || rawText.includes('CALL') || rawText.includes('LONG')) {
+        direction = 'call';
+    } else if (rawText.includes('SELL') || rawText.includes('PUT') || rawText.includes('SHORT')) {
+        direction = 'put';
     }
 
-    if (!direction || !ticker) {
-        const errMsg = `⚠️ Webhook Parse Error\n\nCould not detect Buy/Sell or Pair from this text:\n\n${rawText}`;
+    if (!direction) {
+        const errMsg = `⚠️ Webhook Error\n\nSignal has no BUY or SELL:\n\n${rawText}\n\nMake sure your alert message contains the word BUY or SELL.`;
         console.error(errMsg);
         if (tradingBotInstance && tradingBotInstance.telegramBot && process.env.ADMIN_CHAT_ID) {
             tradingBotInstance.telegramBot.bot.telegram.sendMessage(process.env.ADMIN_CHAT_ID, errMsg).catch(console.error);
         }
-        // Return 200 OK anyway so TradingView doesn't disable the webhook
-        return res.status(200).json({ error: 'Parse Error - Admins notified', raw: rawText });
+        return res.status(200).json({ error: 'No BUY or SELL found in signal', raw: rawText });
     }
 
-    // Handle OTC pairs if mentioned in the alert text
+    // ── STEP 2: Detect ticker ─────────────────────────────────────────────────
+    // Priority: ?ticker= URL param → text body scan
+    let ticker = req.query.ticker ? req.query.ticker.toUpperCase() : null;
+
+    if (!ticker && req.body && typeof req.body === 'object' && req.body.ticker) {
+        ticker = req.body.ticker.toUpperCase();
+    }
+
+    if (!ticker) {
+        // Try to extract from the signal body (handles OANDA:EURUSD, EUR/USD, EURUSD, etc.)
+        const pairRegex = /([A-Z]{3})[\/\-:]?([A-Z]{3})/;
+        const pairMatch = rawText.match(pairRegex);
+        if (pairMatch) {
+            const candidate = pairMatch[1] + pairMatch[2];
+            const commonPairs = [
+                'EURUSD', 'GBPUSD', 'USDJPY', 'USDCAD', 'USDCHF', 'AUDUSD', 'NZDUSD',
+                'EURJPY', 'GBPJPY', 'EURGBP', 'EURCAD', 'EURAUD', 'EURCHF', 'AUDJPY',
+                'CADJPY', 'CHFJPY', 'NZDJPY', 'GBPCAD', 'GBPAUD', 'GBPCHF',
+                'XAUUSD', 'XAGUSD', 'BTCUSD', 'ETHUSD'
+            ];
+            if (commonPairs.includes(candidate)) {
+                ticker = candidate;
+            }
+        }
+    }
+
+    if (!ticker) {
+        const errMsg = `⚠️ Webhook Error\n\nDetected direction: ${direction.toUpperCase()} ✅\nBut no asset/pair found!\n\nFix: Add ?ticker=EURUSD to your webhook URL:\nhttps://iqoptionbot.pxxl.pro/api/tv-webhook?secret=1234ea1&ticker=EURUSD\n\nOriginal signal:\n${rawText}`;
+        console.error(errMsg);
+        if (tradingBotInstance && tradingBotInstance.telegramBot && process.env.ADMIN_CHAT_ID) {
+            tradingBotInstance.telegramBot.bot.telegram.sendMessage(process.env.ADMIN_CHAT_ID, errMsg).catch(console.error);
+        }
+        return res.status(200).json({ error: 'No asset/pair detected. Add ?ticker=EURUSD to URL.', raw: rawText });
+    }
+
+    // Strip broker prefix (e.g. OANDA:EURUSD → EURUSD)
+    if (ticker.includes(':')) {
+        ticker = ticker.split(':').pop();
+    }
+
+    // Handle OTC
     if (rawText.includes('OTC') && !ticker.includes('OTC')) {
         ticker += '-OTC';
+    }
     }
 
     // 3. Force 5-minute trade duration
